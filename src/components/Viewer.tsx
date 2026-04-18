@@ -5,10 +5,12 @@ import type { SilhouetteMeshSet } from '../lib/svgToSilhouette';
 
 interface ViewerProps {
   meshes: SilhouetteMeshSet | null;
-  colors: { outline: string; body: string; details: string[] };
+  outlineColor: string;
+  bodyColor: string;
+  slotColors: Record<number, string>;
 }
 
-export function Viewer({ meshes, colors }: ViewerProps) {
+export function Viewer({ meshes, outlineColor, bodyColor, slotColors }: ViewerProps) {
   return (
     <Canvas camera={{ position: [0, -140, 180], fov: 35, up: [0, 0, 1] }} shadows frameloop="demand">
       <color attach="background" args={['#0c0c0c']} />
@@ -32,7 +34,7 @@ export function Viewer({ meshes, colors }: ViewerProps) {
         <group>
           <mesh geometry={meshes.outline} castShadow receiveShadow>
             <meshStandardMaterial
-              color={colors.outline}
+              color={outlineColor}
               metalness={0.05}
               roughness={0.7}
               side={THREE.DoubleSide}
@@ -40,16 +42,16 @@ export function Viewer({ meshes, colors }: ViewerProps) {
           </mesh>
           <mesh geometry={meshes.body} castShadow receiveShadow>
             <meshStandardMaterial
-              color={colors.body}
+              color={bodyColor}
               metalness={0.1}
               roughness={0.6}
               side={THREE.DoubleSide}
             />
           </mesh>
-          {meshes.details.map((geom, i) => (
-            <mesh key={i} geometry={geom} castShadow receiveShadow>
+          {meshes.slots.map((slot) => (
+            <mesh key={slot.slotId} geometry={slot.geometry} castShadow receiveShadow>
               <meshStandardMaterial
-                color={colors.details[i] ?? '#e5e7eb'}
+                color={slotColors[slot.slotId] ?? '#e5e7eb'}
                 metalness={0.08}
                 roughness={0.65}
                 side={THREE.DoubleSide}

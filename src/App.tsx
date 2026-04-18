@@ -3,11 +3,8 @@ import * as THREE from 'three';
 import { UploadZone } from './components/UploadZone';
 import { Viewer } from './components/Viewer';
 import { Tooltip } from './components/Tooltip';
-import {
-  traceImage,
-  type DetailLayerConfig,
-  type TraceParams,
-} from './lib/imageToSvg';
+import { SvgPaintPicker, type Slot } from './components/SvgPaintPicker';
+import { traceImage, type TraceParams, type TraceResult } from './lib/imageToSvg';
 import {
   buildSilhouette,
   type SilhouetteMeshSet,
@@ -17,11 +14,20 @@ import { downloadStl } from './lib/exportStl';
 import { downloadThreeMf } from './lib/export3mf';
 import './App.css';
 
-type Stage = 'upload' | 'trace' | 'model';
+type Stage = 'upload' | 'paint' | 'model';
 type SourceKind = 'png' | 'svg';
 
-const DEFAULT_DETAIL_1: DetailLayerConfig = { enabled: false, threshold: 0.3, color: '#111827' };
-const DEFAULT_DETAIL_2: DetailLayerConfig = { enabled: false, threshold: 0.6, color: '#9ca3af' };
+const OUTLINE_SLOT = 0;
+const BODY_SLOT = 1;
+const USER_SLOT_IDS = [2, 3];
+const ALL_USER_AND_BODY = [BODY_SLOT, ...USER_SLOT_IDS];
+
+const DEFAULT_SLOTS: Slot[] = [
+  { id: OUTLINE_SLOT, label: 'Outline', color: '#111827' },
+  { id: BODY_SLOT, label: 'Body', color: '#fbbf24' },
+  { id: 2, label: 'Detail A', color: '#111111' },
+  { id: 3, label: 'Detail B', color: '#f3f4f6' },
+];
 
 const DEFAULT_TRACE: TraceParams = {
   source: 'auto',
@@ -30,8 +36,8 @@ const DEFAULT_TRACE: TraceParams = {
   smoothing: 3,
   curveSmoothing: 2,
   invert: false,
-  bodyColor: '#fbbf24',
-  details: [DEFAULT_DETAIL_1, DEFAULT_DETAIL_2],
+  includeDetails: true,
+  detailThreshold: null,
 };
 
 const DEFAULT_SILHOUETTE: SilhouetteParams = {
@@ -43,24 +49,21 @@ const DEFAULT_SILHOUETTE: SilhouetteParams = {
   tasselMargin: 3,
 };
 
-const DEFAULT_OUTLINE_COLOR = '#111827';
-
 export function App() {
   const [stage, setStage] = useState<Stage>('upload');
   const [fileName, setFileName] = useState('');
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceKind, setSourceKind] = useState<SourceKind>('svg');
-  const [silhouetteSvg, setSilhouetteSvg] = useState('');
-  const [detailSvgs, setDetailSvgs] = useState<Array<{ svg: string; color: string }>>([]);
-  const [previewSvg, setPreviewSvg] = useState('');
-  const [otsuHint, setOtsuHint] = useState<number | null>(null);
-  const [resolvedSource, setResolvedSource] = useState<'alpha' | 'luminance'>('luminance');
-  const [alphaDetected, setAlphaDetected] = useState(false);
+
+  const [trace, setTrace] = useState<TraceResult | null>(null);
+  const [assignments, setAssignments] = useState<Record<string, number>>({});
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const [slots, setSlots] = useState<Slot[]>(DEFAULT_SLOTS);
   const [traceParams, setTraceParams] = useState<TraceParams>(DEFAULT_TRACE);
   const [silhouetteParams, setSilhouetteParams] = useState<SilhouetteParams>(DEFAULT_SILHOUETTE);
-  const [outlineColor, setOutlineColor] = useState(DEFAULT_OUTLINE_COLOR);
+
   const [meshes, setMeshes] = useState<SilhouetteMeshSet | null>(null);
-  const [traceEmpty, setTraceEmpty] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
@@ -73,13 +76,15 @@ export function App() {
       try {
         const r = await traceImage(sourceFile, traceParams);
         if (cancelled) return;
-        setSilhouetteSvg(r.silhouetteSvg);
-        setDetailSvgs(r.detailLayers.map((d) => ({ svg: d.svg, color: d.color })));
-        setPreviewSvg(r.previewSvg);
-        setOtsuHint(r.otsuThreshold);
-        setResolvedSource(r.resolvedSource);
-        setAlphaDetected(r.alphaDetected);
-        setTraceEmpty(r.empty);
+        setTrace(r);
+        setAssignments((prev) => {
+          const next: Record<string, number> = {};
+          for (const p of r.paths) {
+            next[p.id] = prev[p.id] ?? BODY_SLOT;
+          }
+          return next;
+        });
+        setSelected(new Set());
         setStatus('');
       } catch (e) {
         if (cancelled) return;
@@ -93,24 +98,30 @@ export function App() {
   }, [sourceFile, sourceKind, traceParams]);
 
   useEffect(() => {
-    if (stage !== 'model' || !silhouetteSvg) return;
+    if (stage !== 'model' || !trace || trace.paths.length === 0) return;
     try {
       const next = buildSilhouette(
-        silhouetteSvg,
-        detailSvgs.map((d) => ({ svg: d.svg, color: d.color })),
+        {
+          paths: trace.paths,
+          silhouettePathIds: trace.silhouettePathIds,
+          assignments,
+          userSlotIds: USER_SLOT_IDS,
+          width: trace.width,
+          height: trace.height,
+        },
         silhouetteParams,
       );
       setMeshes((prev) => {
         prev?.outline.dispose();
         prev?.body.dispose();
-        for (const d of prev?.details ?? []) d.dispose();
+        for (const s of prev?.slots ?? []) s.geometry.dispose();
         return next;
       });
       setError('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [stage, silhouetteSvg, detailSvgs, silhouetteParams]);
+  }, [stage, trace, assignments, silhouetteParams]);
 
   const handleFile = async (file: File) => {
     setFileName(file.name);
@@ -119,20 +130,84 @@ export function App() {
     if (isSvg) {
       const text = await file.text();
       setSourceKind('svg');
-      setSilhouetteSvg(text);
-      setDetailSvgs([]);
-      setPreviewSvg(text);
+      const synthetic: TraceResult = {
+        paths: [{ id: 'svg_0', d: extractSvgPathsAsD(text), role: 'silhouette', area: 0 }],
+        silhouettePathIds: ['svg_0'],
+        detailPathIds: [],
+        empty: false,
+        resolvedSource: 'luminance',
+        alphaDetected: false,
+        otsuThreshold: 0.5,
+        usedThreshold: 0.5,
+        detailOtsu: 0.5,
+        width: 1000,
+        height: 1000,
+      };
+      setTrace(synthetic);
+      setAssignments({ svg_0: BODY_SLOT });
+      setSelected(new Set());
       setStage('model');
     } else {
       setSourceKind('png');
-      setStage('trace');
+      setStage('paint');
     }
   };
 
   const baseName = () => fileName.replace(/\.[^.]+$/, '') || 'bookmark';
 
+  const toggleSelect = (id: string, shift: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (shift) {
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+      } else {
+        if (next.size === 1 && next.has(id)) next.clear();
+        else {
+          next.clear();
+          next.add(id);
+        }
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelected(new Set());
+
+  const assignSelectedTo = (slotId: number) => {
+    if (selected.size === 0 || slotId === OUTLINE_SLOT) return;
+    setAssignments((prev) => {
+      const next = { ...prev };
+      for (const id of selected) next[id] = slotId;
+      return next;
+    });
+    setSelected(new Set());
+  };
+
+  const setSlotColor = (slotId: number, color: string) => {
+    setSlots((prev) => prev.map((s) => (s.id === slotId ? { ...s, color } : s)));
+  };
+
+  const resetAssignments = () => {
+    if (!trace) return;
+    const next: Record<string, number> = {};
+    for (const p of trace.paths) next[p.id] = BODY_SLOT;
+    setAssignments(next);
+    setSelected(new Set());
+  };
+
   const downloadSvg = () => {
-    const blob = new Blob([silhouetteSvg], { type: 'image/svg+xml' });
+    if (!trace) return;
+    const parts = trace.paths.map((p) => {
+      const slotId = assignments[p.id] ?? BODY_SLOT;
+      const color = slots.find((s) => s.id === slotId)?.color ?? '#888';
+      return `<path fill="${color}" fill-rule="evenodd" d="${p.d}"/>`;
+    });
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${trace.width} ${trace.height}">` +
+      parts.join('') +
+      `</svg>`;
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -141,25 +216,29 @@ export function App() {
     URL.revokeObjectURL(url);
   };
 
-  const parts3mf = () => {
-    if (!meshes) return [];
-    const parts = [
+  const exportParts = () => {
+    if (!meshes) return [] as Array<{ name: string; geometry: THREE.BufferGeometry }>;
+    const parts: Array<{ name: string; geometry: THREE.BufferGeometry }> = [
       { name: 'outline', geometry: meshes.outline },
       { name: 'body', geometry: meshes.body },
-      ...meshes.details.map((g, i) => ({ name: `detail_${i + 1}`, geometry: g })),
     ];
+    for (const s of meshes.slots) {
+      const label = slots.find((x) => x.id === s.slotId)?.label.toLowerCase().replace(/\s+/g, '_') ?? `slot_${s.slotId}`;
+      if (s.geometry.attributes.position && s.geometry.attributes.position.count > 0) {
+        parts.push({ name: label, geometry: s.geometry });
+      }
+    }
     return parts;
   };
 
   const export3mf = () => {
-    const parts = parts3mf();
+    const parts = exportParts();
     if (parts.length === 0) return;
     downloadThreeMf(parts, baseName());
   };
 
   const exportStls = () => {
-    const parts = parts3mf();
-    for (const part of parts) {
+    for (const part of exportParts()) {
       const mesh = new THREE.Mesh(part.geometry);
       downloadStl(mesh, `${baseName()}_${part.name}.stl`);
     }
@@ -169,16 +248,14 @@ export function App() {
     setMeshes((prev) => {
       prev?.outline.dispose();
       prev?.body.dispose();
-      for (const d of prev?.details ?? []) d.dispose();
+      for (const s of prev?.slots ?? []) s.geometry.dispose();
       return null;
     });
-    setSilhouetteSvg('');
-    setDetailSvgs([]);
-    setPreviewSvg('');
+    setTrace(null);
+    setAssignments({});
+    setSelected(new Set());
     setFileName('');
     setSourceFile(null);
-    setOtsuHint(null);
-    setTraceEmpty(false);
     setTraceParams(DEFAULT_TRACE);
     setStage('upload');
     setError('');
@@ -189,19 +266,25 @@ export function App() {
     setTraceParams({ ...traceParams, [k]: v });
   const setSP = <K extends keyof SilhouetteParams>(k: K, v: SilhouetteParams[K]) =>
     setSilhouetteParams({ ...silhouetteParams, [k]: v });
-  const setDetail = (idx: number, patch: Partial<DetailLayerConfig>) => {
-    const next = traceParams.details.map((d, i) => (i === idx ? { ...d, ...patch } : d));
-    setTraceParams({ ...traceParams, details: next });
-  };
 
   const thresholdOverride = traceParams.threshold;
-  const thresholdUI = thresholdOverride ?? otsuHint ?? 0.5;
+  const thresholdUI = thresholdOverride ?? trace?.otsuThreshold ?? 0.5;
+  const resolvedSource = trace?.resolvedSource ?? 'luminance';
+  const alphaDetected = trace?.alphaDetected ?? false;
 
-  const viewerColors = {
-    outline: outlineColor,
-    body: traceParams.bodyColor,
-    details: traceParams.details.map((d) => d.color),
-  };
+  const slotColorMap: Record<number, string> = {};
+  for (const s of slots) slotColorMap[s.id] = s.color;
+  const outlineColor = slots.find((s) => s.id === OUTLINE_SLOT)?.color ?? '#111';
+  const bodyColor = slots.find((s) => s.id === BODY_SLOT)?.color ?? '#fbbf24';
+
+  const pathCountsBySlot: Record<number, number> = {};
+  if (trace) {
+    for (const s of ALL_USER_AND_BODY) pathCountsBySlot[s] = 0;
+    for (const p of trace.paths) {
+      const sid = assignments[p.id] ?? BODY_SLOT;
+      pathCountsBySlot[sid] = (pathCountsBySlot[sid] ?? 0) + 1;
+    }
+  }
 
   return (
     <div className={`app stage-${stage}`}>
@@ -217,10 +300,10 @@ export function App() {
             <UploadZone onFile={handleFile} />
             <div className="hero-steps">
               <span>
-                <b>1</b> Upload image
+                <b>1</b> Upload
               </span>
               <span>
-                <b>2</b> Tune the trace
+                <b>2</b> Paint
               </span>
               <span>
                 <b>3</b> Export 3MF → Bambu
@@ -238,24 +321,24 @@ export function App() {
               <nav className="stages">
                 <button
                   type="button"
-                  className={`stage-chip${stage === 'trace' ? ' on' : ''}`}
-                  onClick={() => setStage('trace')}
+                  className={`stage-chip${stage === 'paint' ? ' on' : ''}`}
+                  onClick={() => setStage('paint')}
                   disabled={sourceKind !== 'png'}
                 >
-                  1 · Trace
+                  1 · Paint
                 </button>
                 <button
                   type="button"
                   className={`stage-chip${stage === 'model' ? ' on' : ''}`}
                   onClick={() => setStage('model')}
-                  disabled={!silhouetteSvg || traceEmpty}
+                  disabled={!trace || trace.paths.length === 0}
                 >
                   2 · Model
                 </button>
               </nav>
             </header>
 
-            {stage === 'trace' && (
+            {stage === 'paint' && (
               <>
                 <div className="section">
                   <h2>Source</h2>
@@ -266,11 +349,11 @@ export function App() {
                 </div>
 
                 <div className="section">
-                  <h2>Silhouette</h2>
+                  <h2>Trace</h2>
                   <label className="row">
                     <Tooltip
-                      label="From"
-                      hint="How to find the outline of the subject. Alpha uses transparent pixels (great for PNGs with clean cutouts). Luminance picks a brightness threshold."
+                      label="Silhouette from"
+                      hint="Alpha uses transparent background (best for clean PNG cutouts). Luminance picks a brightness threshold."
                     />
                     <select
                       value={traceParams.source}
@@ -281,40 +364,39 @@ export function App() {
                       <option value="auto">
                         Auto ({alphaDetected ? 'alpha' : 'luminance'})
                       </option>
-                      <option value="alpha">Alpha channel</option>
+                      <option value="alpha">Alpha</option>
                       <option value="luminance">Luminance</option>
                     </select>
                   </label>
                   {resolvedSource === 'luminance' && (
                     <>
-                      <label className="row range">
-                        <Tooltip
-                          label="Threshold"
-                          hint="Pixels darker than this become part of the subject. Slide down to catch more, up to keep only dark ink."
-                        />
-                        <input
-                          type="range"
-                          min={0.05}
-                          max={0.95}
-                          step={0.01}
-                          value={thresholdUI}
-                          onChange={(e) => setTP('threshold', +e.target.value)}
-                        />
-                        <span className="num">{thresholdUI.toFixed(2)}</span>
-                      </label>
+                      <RangeRow
+                        label="Threshold"
+                        hint="Pixels darker than this become the silhouette."
+                        min={0.05}
+                        max={0.95}
+                        step={0.01}
+                        value={thresholdUI}
+                        onChange={(v) => setTP('threshold', v)}
+                        fmt={(v) => v.toFixed(2)}
+                      />
                       <div className="row-actions">
                         <button
                           className="link"
                           onClick={() => setTP('threshold', null)}
                           disabled={thresholdOverride === null}
                         >
-                          Auto (Otsu{otsuHint != null ? ` ${otsuHint.toFixed(2)}` : ''})
+                          Auto (Otsu
+                          {trace?.otsuThreshold != null
+                            ? ` ${trace.otsuThreshold.toFixed(2)}`
+                            : ''}
+                          )
                         </button>
                       </div>
                       <label className="row">
                         <Tooltip
                           label="Invert"
-                          hint="Flip what's considered inside/outside. Use when the subject is light on a dark background."
+                          hint="Flip silhouette/background. Use when the subject is light on a dark background."
                         />
                         <input
                           type="checkbox"
@@ -324,13 +406,9 @@ export function App() {
                       </label>
                     </>
                   )}
-                </div>
-
-                <div className="section">
-                  <h2>Trace quality</h2>
                   <RangeRow
                     label="Despeckle"
-                    hint="Drops small islands from the trace. Raise to clean up speckle; lower to keep tiny details."
+                    hint="Drops tiny islands from the trace. Higher cleans speckle; lower keeps small details."
                     min={0}
                     max={30}
                     step={1}
@@ -340,7 +418,7 @@ export function App() {
                   />
                   <RangeRow
                     label="Smoothing"
-                    hint="How tightly the tracer hugs the edges. Higher = softer curves, less jitter, fewer points."
+                    hint="Tracer tolerance. Higher = softer curves, fewer points."
                     min={0.1}
                     max={10}
                     step={0.1}
@@ -350,7 +428,7 @@ export function App() {
                   />
                   <RangeRow
                     label="Curve smoothing"
-                    hint="Post-trace corner-cutting pass (Chaikin). Each step makes curves smoother and rounder — 0 keeps corners crisp."
+                    hint="Post-trace corner-cutting pass. 0 keeps corners crisp."
                     min={0}
                     max={4}
                     step={1}
@@ -358,45 +436,80 @@ export function App() {
                     onChange={(v) => setTP('curveSmoothing', v)}
                     fmt={(v) => String(v)}
                   />
-                </div>
-
-                <div className="section">
-                  <h2>Colors</h2>
-                  <ColorRow
-                    label="Body fill"
-                    hint="The base color that fills the silhouette. Everything not claimed by a detail layer prints in this filament."
-                    value={traceParams.bodyColor}
-                    onChange={(v) => setTP('bodyColor', v)}
-                  />
-                </div>
-
-                <div className="section">
-                  <h2>Detail layers</h2>
-                  {traceParams.details.map((d, i) => (
-                    <DetailLayerRow
-                      key={i}
-                      index={i}
-                      config={d}
-                      onChange={(patch) => setDetail(i, patch)}
+                  <label className="row">
+                    <Tooltip
+                      label="Include interior details"
+                      hint="Also trace darker pixels inside the silhouette as separate paths you can paint individually."
                     />
-                  ))}
+                    <input
+                      type="checkbox"
+                      checked={traceParams.includeDetails}
+                      onChange={(e) => setTP('includeDetails', e.target.checked)}
+                    />
+                  </label>
+                </div>
+
+                <div className="section palette">
+                  <h2>Palette</h2>
                   <p className="hint">
-                    Each enabled layer captures the remaining darkest pixels up to its
-                    threshold and becomes a separate filament.
+                    Click paths in the preview (shift-click adds). Then click a slot
+                    to paint them.
                   </p>
+                  {slots.map((slot) => {
+                    const canAssign = selected.size > 0 && slot.id !== OUTLINE_SLOT;
+                    const count = pathCountsBySlot[slot.id];
+                    return (
+                      <div
+                        key={slot.id}
+                        className={`palette-slot${canAssign ? ' assignable' : ''}${slot.id === OUTLINE_SLOT ? ' auto' : ''}`}
+                      >
+                        <input
+                          type="color"
+                          value={slot.color}
+                          onChange={(e) => setSlotColor(slot.id, e.target.value)}
+                          aria-label={`${slot.label} color`}
+                        />
+                        <button
+                          className="palette-label"
+                          onClick={() => canAssign && assignSelectedTo(slot.id)}
+                          disabled={!canAssign}
+                          type="button"
+                        >
+                          <span className="palette-name">{slot.label}</span>
+                          <span className="palette-count">
+                            {slot.id === OUTLINE_SLOT
+                              ? 'auto'
+                              : count != null
+                                ? `${count} path${count === 1 ? '' : 's'}`
+                                : ''}
+                          </span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                  <div className="row-actions">
+                    {selected.size > 0 && (
+                      <span className="hint">
+                        {selected.size} selected — click a slot to paint
+                      </span>
+                    )}
+                    <button className="link" onClick={resetAssignments}>
+                      Reset paints
+                    </button>
+                  </div>
                 </div>
 
                 {status && <div className="status">{status}</div>}
                 {error && <div className="error">{error}</div>}
 
                 <div className="actions">
-                  <button onClick={downloadSvg} disabled={!silhouetteSvg}>
-                    Download silhouette SVG
+                  <button onClick={downloadSvg} disabled={!trace || trace.empty}>
+                    Download SVG
                   </button>
                   <button
                     className="primary"
                     onClick={() => setStage('model')}
-                    disabled={!silhouetteSvg}
+                    disabled={!trace || trace.empty}
                   >
                     Continue → 3D
                   </button>
@@ -411,8 +524,8 @@ export function App() {
                   <div className="filename">{fileName}</div>
                   <div className="row-actions">
                     {sourceKind === 'png' && (
-                      <button className="link" onClick={() => setStage('trace')}>
-                        Edit trace
+                      <button className="link" onClick={() => setStage('paint')}>
+                        Edit paint
                       </button>
                     )}
                     <button className="link" onClick={reset}>
@@ -425,7 +538,7 @@ export function App() {
                   <h2>Dimensions</h2>
                   <NumRow
                     label="Long side (mm)"
-                    hint="The longest dimension of the finished bookmark."
+                    hint="Longest dimension of the finished bookmark."
                     min={30}
                     max={300}
                     step={1}
@@ -434,7 +547,7 @@ export function App() {
                   />
                   <NumRow
                     label="Outline width (mm)"
-                    hint="How far the outline color extends past the silhouette. Too thin and it'll be fragile; 1.5-3 mm is typical."
+                    hint="How far the outline color extends past the silhouette. 1.5–3 mm is typical."
                     min={0.4}
                     max={10}
                     step={0.1}
@@ -457,7 +570,7 @@ export function App() {
                   <label className="row">
                     <Tooltip
                       label="Enable"
-                      hint="Adds a small hole at the top so you can tie a tassel/ribbon to the bookmark."
+                      hint="Adds a hole at the top edge so you can thread a tassel."
                     />
                     <input
                       type="checkbox"
@@ -469,7 +582,7 @@ export function App() {
                     <>
                       <NumRow
                         label="Diameter"
-                        hint="Hole width. 3-4 mm fits a thin tassel cord."
+                        hint="3–4 mm fits a thin tassel cord."
                         min={1}
                         max={15}
                         step={0.5}
@@ -478,7 +591,7 @@ export function App() {
                       />
                       <NumRow
                         label="Inset from top"
-                        hint="How far down from the very top edge the hole sits."
+                        hint="Distance between the hole and the bookmark's top edge."
                         min={1}
                         max={30}
                         step={0.5}
@@ -489,31 +602,20 @@ export function App() {
                   )}
                 </div>
 
-                <div className="section">
-                  <h2>Preview colors</h2>
-                  <ColorRow
-                    label="Outline"
-                    hint="Color of the outer rim. Often a dark filament for contrast."
-                    value={outlineColor}
-                    onChange={setOutlineColor}
-                  />
-                  <ColorRow
-                    label="Body"
-                    hint="Filament for the main silhouette fill."
-                    value={traceParams.bodyColor}
-                    onChange={(v) => setTP('bodyColor', v)}
-                  />
-                  {traceParams.details.map((d, i) =>
-                    d.enabled ? (
-                      <ColorRow
-                        key={i}
-                        label={`Detail ${i + 1}`}
-                        hint="Filament for this detail layer."
-                        value={d.color}
-                        onChange={(v) => setDetail(i, { color: v })}
+                <div className="section palette">
+                  <h2>Palette</h2>
+                  {slots.map((slot) => (
+                    <div key={slot.id} className="palette-slot auto">
+                      <input
+                        type="color"
+                        value={slot.color}
+                        onChange={(e) => setSlotColor(slot.id, e.target.value)}
                       />
-                    ) : null,
-                  )}
+                      <div className="palette-label disabled">
+                        <span className="palette-name">{slot.label}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
 
                 {error && <div className="error">{error}</div>}
@@ -538,26 +640,39 @@ export function App() {
                 pointerEvents: stage === 'model' ? 'auto' : 'none',
               }}
             >
-              <Viewer meshes={meshes} colors={viewerColors} />
+              <Viewer
+                meshes={meshes}
+                outlineColor={outlineColor}
+                bodyColor={bodyColor}
+                slotColors={slotColorMap}
+              />
             </div>
-            {stage === 'trace' && (
+            {stage === 'paint' && (
               <div className="svg-preview">
                 {status ? (
                   <div className="empty-hint">{status}</div>
-                ) : traceEmpty ? (
+                ) : trace && trace.empty ? (
                   <div className="trace-empty">
                     <strong>No silhouette detected</strong>
                     <p>
                       Try a different <em>Silhouette from</em> mode, slide the
-                      threshold, or toggle <em>Invert</em>. If the source image has
-                      tiny details, lower <em>Despeckle</em>.
+                      threshold, or toggle <em>Invert</em>.
                     </p>
                   </div>
-                ) : previewSvg ? (
-                  <div
-                    className="svg-frame"
-                    dangerouslySetInnerHTML={{ __html: previewSvg }}
-                  />
+                ) : trace ? (
+                  <div className="svg-frame">
+                    <SvgPaintPicker
+                      paths={trace.paths}
+                      width={trace.width}
+                      height={trace.height}
+                      slots={slots}
+                      assignments={assignments}
+                      selected={selected}
+                      bodySlotId={BODY_SLOT}
+                      onSelect={toggleSelect}
+                      onClearSelection={clearSelection}
+                    />
+                  </div>
                 ) : (
                   <div className="empty-hint">Tracing…</div>
                 )}
@@ -568,6 +683,17 @@ export function App() {
       )}
     </div>
   );
+}
+
+function extractSvgPathsAsD(svgText: string): string {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgText, 'image/svg+xml');
+  const pieces: string[] = [];
+  doc.querySelectorAll('path').forEach((p) => {
+    const d = p.getAttribute('d');
+    if (d) pieces.push(d);
+  });
+  return pieces.join(' ');
 }
 
 function RangeRow(props: {
@@ -617,74 +743,5 @@ function NumRow(props: {
         onChange={(e) => props.onChange(+e.target.value)}
       />
     </label>
-  );
-}
-
-function ColorRow(props: {
-  label: string;
-  hint: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <label className="row">
-      <Tooltip label={props.label} hint={props.hint} />
-      <input
-        type="color"
-        value={props.value}
-        onChange={(e) => props.onChange(e.target.value)}
-      />
-    </label>
-  );
-}
-
-function DetailLayerRow(props: {
-  index: number;
-  config: DetailLayerConfig;
-  onChange: (patch: Partial<DetailLayerConfig>) => void;
-}) {
-  const { index, config, onChange } = props;
-  const hintBase =
-    index === 0
-      ? 'Usually the darkest pixels (black ink, outlines). Everything under this luminance becomes its own filament.'
-      : 'The next band of darker pixels, above the previous layer but below this threshold.';
-  return (
-    <div className={`detail-block${config.enabled ? ' on' : ''}`}>
-      <label className="row">
-        <Tooltip label={`Layer ${index + 1}`} hint={hintBase} />
-        <input
-          type="checkbox"
-          checked={config.enabled}
-          onChange={(e) => onChange({ enabled: e.target.checked })}
-        />
-      </label>
-      {config.enabled && (
-        <>
-          <label className="row range">
-            <Tooltip
-              label="Threshold"
-              hint="Luminance cutoff for this layer. Pixels below this (and above the previous layer) go into this filament."
-            />
-            <input
-              type="range"
-              min={0.05}
-              max={0.95}
-              step={0.01}
-              value={config.threshold}
-              onChange={(e) => onChange({ threshold: +e.target.value })}
-            />
-            <span className="num">{config.threshold.toFixed(2)}</span>
-          </label>
-          <label className="row">
-            <Tooltip label="Color" hint="Filament color for this layer in the preview." />
-            <input
-              type="color"
-              value={config.color}
-              onChange={(e) => onChange({ color: e.target.value })}
-            />
-          </label>
-        </>
-      )}
-    </div>
   );
 }

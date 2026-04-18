@@ -1,19 +1,12 @@
 import ImageTracer from 'imagetracerjs';
 import {
-  compositeMultiPolygonsToSvg,
-  multiPolygonToSvg,
+  polygonToPathD,
   smoothMultiPolygon,
   svgToMultiPolygon,
   type MultiPolygon,
 } from './polygonHelpers';
 
 export type SilhouetteSource = 'auto' | 'alpha' | 'luminance';
-
-export interface DetailLayerConfig {
-  enabled: boolean;
-  threshold: number;
-  color: string;
-}
 
 export interface TraceParams {
   source: SilhouetteSource;
@@ -22,28 +15,31 @@ export interface TraceParams {
   smoothing: number;
   curveSmoothing: number;
   invert: boolean;
-  bodyColor: string;
-  details: DetailLayerConfig[];
+  includeDetails: boolean;
+  detailThreshold: number | null;
 }
 
 const TRACE_MAX_DIM = 1600;
 
-export interface TraceLayer {
-  svg: string;
-  color: string;
-  threshold: number;
+export type PathRole = 'silhouette' | 'detail';
+
+export interface TracedPath {
+  id: string;
+  d: string;
+  role: PathRole;
+  area: number;
 }
 
 export interface TraceResult {
-  silhouetteSvg: string;
-  silhouetteColor: string;
-  detailLayers: TraceLayer[];
-  previewSvg: string;
+  paths: TracedPath[];
+  silhouettePathIds: string[];
+  detailPathIds: string[];
   empty: boolean;
   resolvedSource: 'alpha' | 'luminance';
   alphaDetected: boolean;
   otsuThreshold: number;
   usedThreshold: number;
+  detailOtsu: number;
   width: number;
   height: number;
 }
@@ -54,11 +50,7 @@ export async function traceImage(file: File | Blob, params: TraceParams): Promis
   const alphaDetected = hasAlphaCoverage(imageData);
 
   const resolvedSource: 'alpha' | 'luminance' =
-    params.source === 'auto'
-      ? alphaDetected
-        ? 'alpha'
-        : 'luminance'
-      : params.source;
+    params.source === 'auto' ? (alphaDetected ? 'alpha' : 'luminance') : params.source;
 
   const usedThreshold = params.threshold ?? otsu;
 
@@ -70,59 +62,59 @@ export async function traceImage(file: File | Blob, params: TraceParams): Promis
 
   const silhouetteMp = traceAndSmooth(silhouetteBinary, params);
 
-  const enabledDetails = params.details
-    .filter((d) => d.enabled)
-    .map((d) => ({ ...d }))
-    .sort((a, b) => a.threshold - b.threshold);
+  const detailOtsu = otsuInsideMask(imageData, silhouetteBinary) / 255;
+  const detailThreshold = params.detailThreshold ?? detailOtsu;
 
-  const detailLayers: Array<{ mp: MultiPolygon; color: string; threshold: number }> = [];
-  let prevThreshold = 0;
-  for (const d of enabledDetails) {
-    const hi = Math.max(prevThreshold + 0.001, d.threshold);
-    const detailBinary = buildDetailBinary(imageData, silhouetteBinary, prevThreshold, hi);
+  let detailMp: MultiPolygon = [];
+  if (params.includeDetails) {
+    const detailBinary = buildDetailBinary(imageData, silhouetteBinary, 0, detailThreshold);
     const smoothed = majorityFilter3x3(detailBinary);
-    const mp = traceAndSmooth(smoothed, params);
-    detailLayers.push({ mp, color: d.color, threshold: hi });
-    prevThreshold = hi;
+    detailMp = traceAndSmooth(smoothed, params);
   }
 
-  const silhouetteSvg = multiPolygonToSvg(
-    silhouetteMp,
-    imageData.width,
-    imageData.height,
-    true,
-    '#000',
-  );
-
-  const detailSvgs: TraceLayer[] = detailLayers.map((dl) => ({
-    svg: multiPolygonToSvg(dl.mp, imageData.width, imageData.height, true, '#000'),
-    color: dl.color,
-    threshold: dl.threshold,
-  }));
-
-  const previewSvg = compositeMultiPolygonsToSvg(
-    [
-      { mp: silhouetteMp, fill: params.bodyColor },
-      ...detailLayers.map((dl) => ({ mp: dl.mp, fill: dl.color })),
-    ],
-    imageData.width,
-    imageData.height,
-    true,
-  );
+  const paths: TracedPath[] = [];
+  silhouetteMp.forEach((poly, i) => {
+    paths.push({
+      id: `silhouette_${i}`,
+      d: polygonToPathD(poly, true),
+      role: 'silhouette',
+      area: absPolyArea(poly),
+    });
+  });
+  detailMp.forEach((poly, i) => {
+    paths.push({
+      id: `detail_${i}`,
+      d: polygonToPathD(poly, true),
+      role: 'detail',
+      area: absPolyArea(poly),
+    });
+  });
 
   return {
-    silhouetteSvg,
-    silhouetteColor: params.bodyColor,
-    detailLayers: detailSvgs,
-    previewSvg,
+    paths,
+    silhouettePathIds: paths.filter((p) => p.role === 'silhouette').map((p) => p.id),
+    detailPathIds: paths.filter((p) => p.role === 'detail').map((p) => p.id),
     empty: silhouetteMp.length === 0,
     resolvedSource,
     alphaDetected,
     otsuThreshold: otsu,
     usedThreshold,
+    detailOtsu,
     width: imageData.width,
     height: imageData.height,
   };
+}
+
+function absPolyArea(poly: MultiPolygon[number]): number {
+  if (poly.length === 0) return 0;
+  const ring = poly[0];
+  let a = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % ring.length];
+    a += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(a / 2);
 }
 
 function traceAndSmooth(binary: ImageData, params: TraceParams): MultiPolygon {
@@ -187,10 +179,27 @@ function otsuThreshold(src: ImageData): number {
     total++;
   }
   if (total === 0) return 128;
+  return computeOtsu(hist, total);
+}
 
+function otsuInsideMask(src: ImageData, mask: ImageData): number {
+  const hist = new Uint32Array(256);
+  let total = 0;
+  for (let i = 0; i < src.data.length; i += 4) {
+    if (mask.data[i] >= 128) continue;
+    const lum = Math.round(
+      0.299 * src.data[i] + 0.587 * src.data[i + 1] + 0.114 * src.data[i + 2],
+    );
+    hist[lum]++;
+    total++;
+  }
+  if (total === 0) return 128;
+  return computeOtsu(hist, total);
+}
+
+function computeOtsu(hist: Uint32Array, total: number): number {
   let sum = 0;
   for (let t = 0; t < 256; t++) sum += t * hist[t];
-
   let sumB = 0;
   let wB = 0;
   let maxVar = 0;

@@ -5,12 +5,12 @@ import {
   bbox,
   circle,
   multiPolygonToShapes,
-  polygonArea,
-  svgToMultiPolygon,
+  pathDToMultiPolygon,
   translateScale,
   type MultiPolygon,
 } from './polygonHelpers';
 import { offsetMultiPolygon } from './polygonOffset';
+import type { TracedPath } from './imageToSvg';
 
 export interface SilhouetteParams {
   outlineWidth: number;
@@ -21,86 +21,106 @@ export interface SilhouetteParams {
   tasselMargin: number;
 }
 
-export interface DetailLayerInput {
-  svg: string;
-  color: string;
+export interface SlotMesh {
+  slotId: number;
+  geometry: THREE.BufferGeometry;
 }
 
 export interface SilhouetteMeshSet {
   outline: THREE.BufferGeometry;
   body: THREE.BufferGeometry;
-  details: THREE.BufferGeometry[];
+  slots: SlotMesh[];
 }
 
-export function buildSilhouette(
-  silhouetteSvg: string,
-  detailInputs: DetailLayerInput[],
-  p: SilhouetteParams,
-): SilhouetteMeshSet {
-  const rawSil = svgToMultiPolygon(silhouetteSvg);
-  if (rawSil.length === 0) throw new Error('Traced silhouette has no fillable paths.');
-  const filteredSil = dropLargestIfDominant(rawSil);
+export interface BuildInput {
+  paths: TracedPath[];
+  silhouettePathIds: string[];
+  assignments: Record<string, number>;
+  userSlotIds: number[];
+  width: number;
+  height: number;
+}
 
-  const box = bbox(filteredSil);
+export function buildSilhouette(input: BuildInput, p: SilhouetteParams): SilhouetteMeshSet {
+  const { paths, silhouettePathIds, assignments, userSlotIds, width, height } = input;
+
+  const mpByPathId = new Map<string, MultiPolygon>();
+  for (const path of paths) {
+    mpByPathId.set(path.id, pathDToMultiPolygon(path.d, width, height));
+  }
+
+  let silhouette: MultiPolygon = [];
+  for (const id of silhouettePathIds) {
+    const mp = mpByPathId.get(id);
+    if (!mp || mp.length === 0) continue;
+    silhouette =
+      silhouette.length === 0
+        ? mp
+        : (polygonClipping.union(silhouette, mp) as MultiPolygon);
+  }
+  if (silhouette.length === 0) throw new Error('Silhouette is empty.');
+
+  const box = bbox(silhouette);
   const w = box.maxX - box.minX;
   const h = box.maxY - box.minY;
   const longest = Math.max(w, h);
-  if (longest <= 0) throw new Error('Trace has zero extent.');
+  if (longest <= 0) throw new Error('Silhouette has zero extent.');
   const scale = p.targetLongSide / longest;
   const cx = box.minX + w / 2;
   const cy = box.minY + h / 2;
 
-  const silhouette = translateScale(filteredSil, -cx, -cy, scale);
-
-  const rawDetailMps: MultiPolygon[] = detailInputs.map((d) => {
-    const raw = svgToMultiPolygon(d.svg);
-    return translateScale(raw, -cx, -cy, scale);
-  });
-
-  // Clamp each detail to the silhouette so majority-filter / Chaikin
-  // drift can't push detail geometry outside the body.
-  const detailsFinal: MultiPolygon[] = rawDetailMps.map((mp) => {
-    if (mp.length === 0 || silhouette.length === 0) return mp;
-    try {
-      return polygonClipping.intersection(mp, silhouette) as MultiPolygon;
-    } catch {
-      return mp;
-    }
-  });
+  silhouette = translateScale(silhouette, -cx, -cy, scale);
+  for (const [id, mp] of mpByPathId) {
+    mpByPathId.set(id, translateScale(mp, -cx, -cy, scale));
+  }
 
   const dilated = offsetMultiPolygon(silhouette, p.outlineWidth);
-  if (dilated.length === 0) {
-    throw new Error('Outline dilation produced no geometry.');
-  }
+  if (dilated.length === 0) throw new Error('Outline dilation produced no geometry.');
 
-  let outline = polygonClipping.difference(dilated, silhouette) as MultiPolygon;
+  const slotRegions: Array<{ slotId: number; mp: MultiPolygon }> = [];
+  let subtractedFromBody: MultiPolygon = [];
 
-  // Combine all detail layers into one MP, then subtract in a single pass.
-  let combinedDetails: MultiPolygon = [];
-  for (const d of detailsFinal) {
-    if (d.length === 0) continue;
-    combinedDetails =
-      combinedDetails.length === 0
-        ? d
-        : (polygonClipping.union(combinedDetails, d) as MultiPolygon);
-  }
+  for (const slotId of userSlotIds) {
+    const pathIds = paths
+      .filter((p) => (assignments[p.id] ?? 1) === slotId)
+      .map((p) => p.id);
 
-  let body = silhouette;
-  if (combinedDetails.length > 0) {
-    try {
-      body = polygonClipping.difference(body, combinedDetails) as MultiPolygon;
-    } catch {
-      // fall back to iterative subtraction if union/diff fails
-      for (const d of detailsFinal) {
-        if (d.length === 0) continue;
+    let slotMp: MultiPolygon = [];
+    for (const pid of pathIds) {
+      const mp = mpByPathId.get(pid);
+      if (!mp || mp.length === 0) continue;
+      slotMp = slotMp.length === 0 ? mp : (polygonClipping.union(slotMp, mp) as MultiPolygon);
+    }
+
+    if (slotMp.length > 0) {
+      try {
+        slotMp = polygonClipping.intersection(slotMp, silhouette) as MultiPolygon;
+      } catch {
+        /* keep as-is */
+      }
+      if (subtractedFromBody.length > 0) {
         try {
-          body = polygonClipping.difference(body, d) as MultiPolygon;
+          slotMp = polygonClipping.difference(slotMp, subtractedFromBody) as MultiPolygon;
         } catch {
-          /* keep body */
+          /* keep as-is */
         }
       }
     }
+
+    slotRegions.push({ slotId, mp: slotMp });
+    if (slotMp.length > 0) {
+      subtractedFromBody =
+        subtractedFromBody.length === 0
+          ? slotMp
+          : (polygonClipping.union(subtractedFromBody, slotMp) as MultiPolygon);
+    }
   }
+
+  let outline = polygonClipping.difference(dilated, silhouette) as MultiPolygon;
+  let body =
+    subtractedFromBody.length > 0
+      ? (polygonClipping.difference(silhouette, subtractedFromBody) as MultiPolygon)
+      : silhouette;
 
   if (p.tassel && p.tasselDiameter > 0) {
     const db = bbox(dilated);
@@ -109,47 +129,34 @@ export function buildSilhouette(
     const holeCx = (db.minX + db.maxX) / 2;
     const holeRing = circle(p.tasselDiameter / 2, 48, holeCx, holeY);
     const holeMp: MultiPolygon = [[holeRing]];
-    outline = polygonClipping.difference(outline, holeMp) as MultiPolygon;
-    body = polygonClipping.difference(body, holeMp) as MultiPolygon;
-    for (let i = 0; i < detailsFinal.length; i++) {
-      if (detailsFinal[i].length === 0) continue;
-      detailsFinal[i] = polygonClipping.difference(detailsFinal[i], holeMp) as MultiPolygon;
+    try {
+      outline = polygonClipping.difference(outline, holeMp) as MultiPolygon;
+    } catch {
+      /* keep */
+    }
+    try {
+      body = polygonClipping.difference(body, holeMp) as MultiPolygon;
+    } catch {
+      /* keep */
+    }
+    for (const sr of slotRegions) {
+      if (sr.mp.length === 0) continue;
+      try {
+        sr.mp = polygonClipping.difference(sr.mp, holeMp) as MultiPolygon;
+      } catch {
+        /* keep */
+      }
     }
   }
 
   return {
     outline: extrudeMultiPolygon(outline, p.thickness),
     body: extrudeMultiPolygon(body, p.thickness),
-    details: detailsFinal.map((d) => extrudeMultiPolygon(d, p.thickness)),
+    slots: slotRegions.map((sr) => ({
+      slotId: sr.slotId,
+      geometry: extrudeMultiPolygon(sr.mp, p.thickness),
+    })),
   };
-}
-
-function dropLargestIfDominant(mp: MultiPolygon): MultiPolygon {
-  if (mp.length < 2) return mp;
-  let largestIdx = -1;
-  let largestArea = 0;
-  let totalArea = 0;
-  for (let i = 0; i < mp.length; i++) {
-    const a = polygonArea(mp[i]);
-    totalArea += a;
-    if (a > largestArea) {
-      largestArea = a;
-      largestIdx = i;
-    }
-  }
-  if (largestIdx < 0 || totalArea === 0) return mp;
-  const b = bbox([mp[largestIdx]]);
-  const w = b.maxX - b.minX;
-  const h = b.maxY - b.minY;
-  const full = bbox(mp);
-  const fw = full.maxX - full.minX;
-  const fh = full.maxY - full.minY;
-  const coversFull = w > fw * 0.98 && h > fh * 0.98;
-  const dominant = largestArea / totalArea > 0.85;
-  if (coversFull && dominant) {
-    return mp.filter((_, i) => i !== largestIdx);
-  }
-  return mp;
 }
 
 function extrudeMultiPolygon(mp: MultiPolygon, thickness: number): THREE.BufferGeometry {

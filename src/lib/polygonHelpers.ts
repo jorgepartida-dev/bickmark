@@ -144,6 +144,30 @@ export function smoothMultiPolygon(mp: MultiPolygon, iterations: number): MultiP
   return mp.map((poly) => poly.map((ring) => chaikinSmooth(ring, iterations)));
 }
 
+export function pathDToMultiPolygon(d: string, width: number, height: number): MultiPolygon {
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">` +
+    `<path fill="#000" fill-rule="evenodd" d="${d}"/></svg>`;
+  return svgToMultiPolygon(svg);
+}
+
+export function polygonToPathD(poly: Polygon, unflipY: boolean): string {
+  const parts: string[] = [];
+  for (const ring of poly) {
+    if (ring.length < 3) continue;
+    const [first, ...rest] = ring;
+    const sy0 = unflipY ? -first[1] : first[1];
+    let seg = `M${num(first[0])},${num(sy0)}`;
+    for (const [x, y] of rest) {
+      const sy = unflipY ? -y : y;
+      seg += `L${num(x)},${num(sy)}`;
+    }
+    seg += 'Z';
+    parts.push(seg);
+  }
+  return parts.join(' ');
+}
+
 export function multiPolygonToSvg(
   mp: MultiPolygon,
   width: number,
