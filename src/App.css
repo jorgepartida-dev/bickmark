@@ -1,0 +1,108 @@
+.app {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  padding: 16px;
+  background: #222;
+  border-right: 1px solid #333;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sidebar h1 {
+  font-size: 18px;
+  margin: 0 0 4px;
+}
+
+.sidebar h1 .accent { color: #8ecae6; }
+
+.sidebar .tagline {
+  color: #aaa;
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: #1b1b1b;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+}
+
+.section h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #888;
+  margin: 0;
+}
+
+label.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+label.row input[type='number'] {
+  width: 80px;
+}
+
+input, button {
+  font: inherit;
+  color: inherit;
+}
+
+input[type='number'], input[type='text'] {
+  background: #111;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+button {
+  background: #8ecae6;
+  color: #111;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button:disabled {
+  background: #444;
+  color: #888;
+  cursor: not-allowed;
+}
+
+.drop {
+  border: 2px dashed #444;
+  border-radius: 8px;
+  padding: 24px 12px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.drop.active { border-color: #8ecae6; background: #1e2a30; }
+.drop small { display: block; color: #888; margin-top: 4px; }
+
+.viewer { position: relative; background: #111; }
+
+.status {
+  color: #f4a261;
+  font-size: 12px;
+  min-height: 16px;
+}
+
+.error { color: #e76f51; }
