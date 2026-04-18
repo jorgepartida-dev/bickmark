@@ -30,19 +30,21 @@ function pointsToRing(path: ClipperLib.Path): Ring {
 function polyTreeToMultiPolygon(tree: ClipperLib.PolyTree): MultiPolygon {
   const result: MultiPolygon = [];
   const walk = (node: ClipperLib.PolyNode) => {
-    if (!node.IsHole && node.Contour.length >= 3) {
-      const poly: Polygon = [pointsToRing(node.Contour)];
-      for (const child of node.Childs) {
-        if (child.IsHole && child.Contour.length >= 3) {
-          poly.push(pointsToRing(child.Contour));
+    const contour = node.Contour();
+    const childs = node.Childs();
+    if (!node.IsHole() && contour.length >= 3) {
+      const poly: Polygon = [pointsToRing(contour)];
+      for (const child of childs) {
+        if (child.IsHole() && child.Contour().length >= 3) {
+          poly.push(pointsToRing(child.Contour()));
         }
       }
       result.push(poly);
-      for (const child of node.Childs) {
-        for (const grand of child.Childs) walk(grand);
+      for (const child of childs) {
+        for (const grand of child.Childs()) walk(grand);
       }
     }
   };
-  for (const child of tree.Childs) walk(child);
+  for (const child of tree.Childs()) walk(child);
   return result;
 }

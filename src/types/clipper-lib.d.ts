@@ -22,14 +22,18 @@ declare module 'clipper-lib' {
   }
 
   export class PolyNode {
-    Contour: Path;
-    Childs: PolyNode[];
-    Parent: PolyNode;
-    IsHole: boolean;
+    Contour(): Path;
+    Childs(): PolyNode[];
+    Parent(): PolyNode;
+    IsHole(): boolean;
+    ChildCount(): number;
+    GetNext(): PolyNode | null;
   }
 
   export class PolyTree extends PolyNode {
-    Total: number;
+    Clear(): void;
+    GetFirst(): PolyNode | null;
+    Total(): number;
   }
 
   export class ClipperOffset {
