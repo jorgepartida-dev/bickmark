@@ -6,6 +6,7 @@ interface UploadZoneProps {
 
 export function UploadZone({ onFile }: UploadZoneProps) {
   const [active, setActive] = useState(false);
+  const [invalid, setInvalid] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFiles = useCallback(
@@ -13,8 +14,15 @@ export function UploadZone({ onFile }: UploadZoneProps) {
       if (!files || files.length === 0) return;
       const file = files[0];
       const name = file.name.toLowerCase();
-      if (!name.endsWith('.png') && !name.endsWith('.svg') && !file.type.startsWith('image/')) {
-        alert('Please drop a PNG or SVG file.');
+      const ok =
+        name.endsWith('.png') ||
+        name.endsWith('.jpg') ||
+        name.endsWith('.jpeg') ||
+        name.endsWith('.svg') ||
+        file.type.startsWith('image/');
+      if (!ok) {
+        setInvalid(true);
+        setTimeout(() => setInvalid(false), 1800);
         return;
       }
       onFile(file);
@@ -24,7 +32,7 @@ export function UploadZone({ onFile }: UploadZoneProps) {
 
   return (
     <div
-      className={`drop${active ? ' active' : ''}`}
+      className={`drop-hero${active ? ' active' : ''}${invalid ? ' invalid' : ''}`}
       onDragOver={(e) => {
         e.preventDefault();
         setActive(true);
@@ -36,13 +44,29 @@ export function UploadZone({ onFile }: UploadZoneProps) {
         handleFiles(e.dataTransfer.files);
       }}
       onClick={() => inputRef.current?.click()}
+      role="button"
+      tabIndex={0}
     >
-      <strong>Drop PNG or SVG</strong>
-      <small>or click to browse</small>
+      <div className="drop-icon" aria-hidden>
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 3v13m0-13l-4 4m4-4l4 4M5 21h14"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+      <div className="drop-primary">
+        {invalid ? 'Unsupported file' : 'Drop an image here'}
+      </div>
+      <div className="drop-secondary">or click to browse</div>
+      <div className="drop-formats">PNG · JPG · SVG</div>
       <input
         ref={inputRef}
         type="file"
-        accept=".png,.svg,image/png,image/svg+xml"
+        accept=".png,.jpg,.jpeg,.svg,image/*"
         hidden
         onChange={(e) => handleFiles(e.target.files)}
       />

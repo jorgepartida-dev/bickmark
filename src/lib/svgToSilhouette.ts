@@ -21,62 +21,76 @@ export interface SilhouetteParams {
   tasselMargin: number;
 }
 
+export interface DetailLayerInput {
+  svg: string;
+  color: string;
+}
+
 export interface SilhouetteMeshSet {
   outline: THREE.BufferGeometry;
   body: THREE.BufferGeometry;
-  outerFootprint: MultiPolygon;
+  details: THREE.BufferGeometry[];
 }
 
-export function buildSilhouette(svgText: string, p: SilhouetteParams): SilhouetteMeshSet {
-  const raw = svgToMultiPolygon(svgText);
-  if (raw.length === 0) throw new Error('Traced SVG has no fillable paths.');
+export function buildSilhouette(
+  silhouetteSvg: string,
+  detailInputs: DetailLayerInput[],
+  p: SilhouetteParams,
+): SilhouetteMeshSet {
+  const rawSil = svgToMultiPolygon(silhouetteSvg);
+  if (rawSil.length === 0) throw new Error('Traced silhouette has no fillable paths.');
+  const filteredSil = dropLargestIfDominant(rawSil);
 
-  const filtered = dropLargestIfDominant(raw);
-
-  const box = bbox(filtered);
+  const box = bbox(filteredSil);
   const w = box.maxX - box.minX;
   const h = box.maxY - box.minY;
   const longest = Math.max(w, h);
   if (longest <= 0) throw new Error('Trace has zero extent.');
-
   const scale = p.targetLongSide / longest;
   const cx = box.minX + w / 2;
   const cy = box.minY + h / 2;
-  const body = translateScale(filtered, -cx, -cy, scale);
 
-  const dilated = offsetMultiPolygon(body, p.outlineWidth);
+  const silhouette = translateScale(filteredSil, -cx, -cy, scale);
+
+  const detailMps: MultiPolygon[] = detailInputs.map((d) => {
+    const raw = svgToMultiPolygon(d.svg);
+    return translateScale(raw, -cx, -cy, scale);
+  });
+
+  const dilated = offsetMultiPolygon(silhouette, p.outlineWidth);
   if (dilated.length === 0) {
-    throw new Error('Outline dilation produced no geometry. Check trace quality.');
+    throw new Error('Outline dilation produced no geometry.');
   }
 
-  let outline = polygonClipping.difference(
-    dilated,
-    body,
-  ) as MultiPolygon;
+  let outline = polygonClipping.difference(dilated, silhouette) as MultiPolygon;
 
-  let bodyFinal = body;
+  let body = silhouette;
+  for (const d of detailMps) {
+    if (d.length === 0) continue;
+    body = polygonClipping.difference(body, d) as MultiPolygon;
+  }
+
+  const detailsFinal: MultiPolygon[] = detailMps.slice();
 
   if (p.tassel && p.tasselDiameter > 0) {
-    const dilatedBox = bbox(dilated);
-    const topY = dilatedBox.maxY;
+    const db = bbox(dilated);
+    const topY = db.maxY;
     const holeY = topY - p.tasselMargin - p.tasselDiameter / 2;
-    const holeCx = (dilatedBox.minX + dilatedBox.maxX) / 2;
+    const holeCx = (db.minX + db.maxX) / 2;
     const holeRing = circle(p.tasselDiameter / 2, 48, holeCx, holeY);
     const holeMp: MultiPolygon = [[holeRing]];
-    outline = polygonClipping.difference(
-      outline,
-      holeMp,
-    ) as MultiPolygon;
-    bodyFinal = polygonClipping.difference(
-      bodyFinal,
-      holeMp,
-    ) as MultiPolygon;
+    outline = polygonClipping.difference(outline, holeMp) as MultiPolygon;
+    body = polygonClipping.difference(body, holeMp) as MultiPolygon;
+    for (let i = 0; i < detailsFinal.length; i++) {
+      if (detailsFinal[i].length === 0) continue;
+      detailsFinal[i] = polygonClipping.difference(detailsFinal[i], holeMp) as MultiPolygon;
+    }
   }
 
   return {
     outline: extrudeMultiPolygon(outline, p.thickness),
-    body: extrudeMultiPolygon(bodyFinal, p.thickness),
-    outerFootprint: dilated,
+    body: extrudeMultiPolygon(body, p.thickness),
+    details: detailsFinal.map((d) => extrudeMultiPolygon(d, p.thickness)),
   };
 }
 
@@ -85,10 +99,8 @@ function dropLargestIfDominant(mp: MultiPolygon): MultiPolygon {
   let largestIdx = -1;
   let largestArea = 0;
   let totalArea = 0;
-  const areas: number[] = [];
   for (let i = 0; i < mp.length; i++) {
     const a = polygonArea(mp[i]);
-    areas.push(a);
     totalArea += a;
     if (a > largestArea) {
       largestArea = a;
@@ -114,7 +126,12 @@ function extrudeMultiPolygon(mp: MultiPolygon, thickness: number): THREE.BufferG
   if (mp.length === 0) return new THREE.BufferGeometry();
   const shapes = multiPolygonToShapes(mp);
   const geometries = shapes.map(
-    (s) => new THREE.ExtrudeGeometry(s, { depth: thickness, bevelEnabled: false, curveSegments: 24 }),
+    (s) =>
+      new THREE.ExtrudeGeometry(s, {
+        depth: thickness,
+        bevelEnabled: false,
+        curveSegments: 24,
+      }),
   );
   const merged = geometries.length === 1 ? geometries[0] : mergeGeometries(geometries, false);
   if (!merged) throw new Error('Failed to merge extruded geometry.');

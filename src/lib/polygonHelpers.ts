@@ -111,6 +111,88 @@ export function translateScale(
   return mp.map((poly) => poly.map((ring) => ring.map(([x, y]) => [(x + tx) * s, (y + ty) * s] as Pair)));
 }
 
+export function chaikinSmooth(ring: Ring, iterations: number): Ring {
+  if (iterations <= 0 || ring.length < 3) return ring;
+  let current = ring;
+  for (let i = 0; i < iterations; i++) {
+    const next: Ring = [];
+    for (let j = 0; j < current.length; j++) {
+      const [x1, y1] = current[j];
+      const [x2, y2] = current[(j + 1) % current.length];
+      next.push([0.75 * x1 + 0.25 * x2, 0.75 * y1 + 0.25 * y2]);
+      next.push([0.25 * x1 + 0.75 * x2, 0.25 * y1 + 0.75 * y2]);
+    }
+    current = next;
+  }
+  return current;
+}
+
+export function smoothMultiPolygon(mp: MultiPolygon, iterations: number): MultiPolygon {
+  if (iterations <= 0) return mp;
+  return mp.map((poly) => poly.map((ring) => chaikinSmooth(ring, iterations)));
+}
+
+export function multiPolygonToSvg(
+  mp: MultiPolygon,
+  width: number,
+  height: number,
+  unflipY: boolean,
+  fill: string,
+): string {
+  const parts: string[] = [];
+  for (const poly of mp) {
+    for (const ring of poly) {
+      if (ring.length < 3) continue;
+      const [first, ...rest] = ring;
+      const sy0 = unflipY ? -first[1] : first[1];
+      let d = `M${num(first[0])},${num(sy0)}`;
+      for (const [x, y] of rest) {
+        const sy = unflipY ? -y : y;
+        d += `L${num(x)},${num(sy)}`;
+      }
+      d += 'Z';
+      parts.push(`<path fill="${fill}" d="${d}"/>`);
+    }
+  }
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" ` +
+    `preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`
+  );
+}
+
+function num(n: number): string {
+  return (Math.round(n * 100) / 100).toString();
+}
+
+export function compositeMultiPolygonsToSvg(
+  layers: Array<{ mp: MultiPolygon; fill: string }>,
+  width: number,
+  height: number,
+  unflipY: boolean,
+): string {
+  const parts: string[] = [];
+  for (const layer of layers) {
+    for (const poly of layer.mp) {
+      for (const ring of poly) {
+        if (ring.length < 3) continue;
+        const [first, ...rest] = ring;
+        const sy0 = unflipY ? -first[1] : first[1];
+        let d = `M${num(first[0])},${num(sy0)}`;
+        for (const [x, y] of rest) {
+          const sy = unflipY ? -y : y;
+          d += `L${num(x)},${num(sy)}`;
+        }
+        d += 'Z';
+        parts.push(`<path fill="${layer.fill}" d="${d}"/>`);
+      }
+    }
+  }
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" ` +
+    `preserveAspectRatio="xMidYMid meet">${parts.join('')}</svg>`
+  );
+}
+
 export function multiPolygonToShapes(mp: MultiPolygon): THREE.Shape[] {
   return mp.map(polygonToShape);
 }

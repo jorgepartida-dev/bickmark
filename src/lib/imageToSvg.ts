@@ -1,19 +1,44 @@
 import ImageTracer from 'imagetracerjs';
+import {
+  compositeMultiPolygonsToSvg,
+  multiPolygonToSvg,
+  smoothMultiPolygon,
+  svgToMultiPolygon,
+  type MultiPolygon,
+} from './polygonHelpers';
 
 export type SilhouetteSource = 'auto' | 'alpha' | 'luminance';
+
+export interface DetailLayerConfig {
+  enabled: boolean;
+  threshold: number;
+  color: string;
+}
 
 export interface TraceParams {
   source: SilhouetteSource;
   threshold: number | null;
   despeckle: number;
   smoothing: number;
+  curveSmoothing: number;
   invert: boolean;
+  bodyColor: string;
+  details: DetailLayerConfig[];
 }
 
 const TRACE_MAX_DIM = 1600;
 
-export interface TraceResult {
+export interface TraceLayer {
   svg: string;
+  color: string;
+  threshold: number;
+}
+
+export interface TraceResult {
+  silhouetteSvg: string;
+  silhouetteColor: string;
+  detailLayers: TraceLayer[];
+  previewSvg: string;
   resolvedSource: 'alpha' | 'luminance';
   alphaDetected: boolean;
   otsuThreshold: number;
@@ -36,15 +61,69 @@ export async function traceImage(file: File | Blob, params: TraceParams): Promis
 
   const usedThreshold = params.threshold ?? otsu;
 
-  let binary: ImageData;
-  if (resolvedSource === 'alpha') {
-    binary = binarizeByAlpha(imageData, params.invert);
-  } else {
-    binary = binarizeByLuminance(imageData, usedThreshold, params.invert);
+  let silhouetteBinary =
+    resolvedSource === 'alpha'
+      ? binarizeByAlpha(imageData, params.invert)
+      : binarizeByLuminance(imageData, usedThreshold, params.invert);
+  silhouetteBinary = majorityFilter3x3(silhouetteBinary);
+
+  const silhouetteMp = traceAndSmooth(silhouetteBinary, params);
+
+  const enabledDetails = params.details
+    .filter((d) => d.enabled)
+    .map((d) => ({ ...d }))
+    .sort((a, b) => a.threshold - b.threshold);
+
+  const detailLayers: Array<{ mp: MultiPolygon; color: string; threshold: number }> = [];
+  let prevThreshold = 0;
+  for (const d of enabledDetails) {
+    const hi = Math.max(prevThreshold + 0.001, d.threshold);
+    const detailBinary = buildDetailBinary(imageData, silhouetteBinary, prevThreshold, hi);
+    const smoothed = majorityFilter3x3(detailBinary);
+    const mp = traceAndSmooth(smoothed, params);
+    detailLayers.push({ mp, color: d.color, threshold: hi });
+    prevThreshold = hi;
   }
 
-  binary = majorityFilter3x3(binary);
+  const silhouetteSvg = multiPolygonToSvg(
+    silhouetteMp,
+    imageData.width,
+    imageData.height,
+    true,
+    '#000',
+  );
 
+  const detailSvgs: TraceLayer[] = detailLayers.map((dl) => ({
+    svg: multiPolygonToSvg(dl.mp, imageData.width, imageData.height, true, '#000'),
+    color: dl.color,
+    threshold: dl.threshold,
+  }));
+
+  const previewSvg = compositeMultiPolygonsToSvg(
+    [
+      { mp: silhouetteMp, fill: params.bodyColor },
+      ...detailLayers.map((dl) => ({ mp: dl.mp, fill: dl.color })),
+    ],
+    imageData.width,
+    imageData.height,
+    true,
+  );
+
+  return {
+    silhouetteSvg,
+    silhouetteColor: params.bodyColor,
+    detailLayers: detailSvgs,
+    previewSvg,
+    resolvedSource,
+    alphaDetected,
+    otsuThreshold: otsu,
+    usedThreshold,
+    width: imageData.width,
+    height: imageData.height,
+  };
+}
+
+function traceAndSmooth(binary: ImageData, params: TraceParams): MultiPolygon {
   const rawSvg = ImageTracer.imagedataToSVG(binary, {
     numberofcolors: 2,
     pathomit: Math.max(0, Math.round(params.despeckle)),
@@ -56,18 +135,9 @@ export async function traceImage(file: File | Blob, params: TraceParams): Promis
     mincolorratio: 0,
     roundcoords: 1,
   });
-
-  const cleaned = cleanTraceSvg(rawSvg, imageData.width, imageData.height);
-
-  return {
-    svg: cleaned,
-    resolvedSource,
-    alphaDetected,
-    otsuThreshold: otsu,
-    usedThreshold,
-    width: imageData.width,
-    height: imageData.height,
-  };
+  const cleaned = cleanTraceSvg(rawSvg, binary.width, binary.height);
+  const mp = svgToMultiPolygon(cleaned);
+  return smoothMultiPolygon(mp, Math.max(0, Math.round(params.curveSmoothing)));
 }
 
 async function loadAsImageData(file: File | Blob, maxDim: number): Promise<ImageData> {
@@ -171,23 +241,50 @@ function binarizeByLuminance(src: ImageData, threshold01: number, invert: boolea
   return out;
 }
 
+function buildDetailBinary(
+  source: ImageData,
+  silhouette: ImageData,
+  lowLum01: number,
+  highLum01: number,
+): ImageData {
+  const out = new ImageData(new Uint8ClampedArray(source.data.length), source.width, source.height);
+  const low = lowLum01 * 255;
+  const high = highLum01 * 255;
+  for (let i = 0; i < source.data.length; i += 4) {
+    const inSil = silhouette.data[i] < 128;
+    if (!inSil) {
+      out.data[i] = 255;
+      out.data[i + 1] = 255;
+      out.data[i + 2] = 255;
+      out.data[i + 3] = 255;
+      continue;
+    }
+    const lum = 0.299 * source.data[i] + 0.587 * source.data[i + 1] + 0.114 * source.data[i + 2];
+    const on = lum >= low && lum < high;
+    const v = on ? 0 : 255;
+    out.data[i] = v;
+    out.data[i + 1] = v;
+    out.data[i + 2] = v;
+    out.data[i + 3] = 255;
+  }
+  return out;
+}
+
 function majorityFilter3x3(src: ImageData): ImageData {
   const w = src.width;
   const h = src.height;
   const out = new ImageData(new Uint8ClampedArray(src.data.length), w, h);
-  const isOn = (x: number, y: number): boolean => {
-    if (x < 0 || x >= w || y < 0 || y >= h) return false;
-    return src.data[(y * w + x) * 4] < 128;
-  };
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       let count = 0;
       let total = 0;
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
-          if (x + dx < 0 || x + dx >= w || y + dy < 0 || y + dy >= h) continue;
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || xx >= w || yy < 0 || yy >= h) continue;
           total++;
-          if (isOn(x + dx, y + dy)) count++;
+          if (src.data[(yy * w + xx) * 4] < 128) count++;
         }
       }
       const on = count * 2 > total;
