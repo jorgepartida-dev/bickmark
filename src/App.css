@@ -37,15 +37,38 @@
 
 .stages {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   margin-top: 8px;
+}
+
+.stage-chip {
   font-size: 11px;
   color: #6b7280;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  background: transparent;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
 }
 
-.stages .on { color: #fbbf24; }
+.stage-chip:hover:not(:disabled) {
+  background: #1f1f1f;
+  color: #d1d5db;
+}
+
+.stage-chip.on {
+  color: #fbbf24;
+  background: #1f1f1f;
+}
+
+.stage-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 
 .section {
   display: flex;
@@ -309,6 +332,36 @@ button:disabled:hover { background: #2a2a2a; }
   height: 100%;
   max-width: 100%;
   max-height: 100%;
+}
+
+.trace-empty {
+  max-width: 380px;
+  padding: 28px 28px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 10px;
+  color: #fca5a5;
+  font-size: 13px;
+  line-height: 1.55;
+  z-index: 3;
+}
+
+.trace-empty strong {
+  color: #fecaca;
+  font-size: 14px;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.trace-empty p {
+  color: #9ca3af;
+  margin: 0;
+}
+
+.trace-empty em {
+  color: #d1d5db;
+  font-style: normal;
+  font-weight: 500;
 }
 
 /* ==== Upload hero ==== */

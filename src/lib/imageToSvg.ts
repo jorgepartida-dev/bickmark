@@ -39,6 +39,7 @@ export interface TraceResult {
   silhouetteColor: string;
   detailLayers: TraceLayer[];
   previewSvg: string;
+  empty: boolean;
   resolvedSource: 'alpha' | 'luminance';
   alphaDetected: boolean;
   otsuThreshold: number;
@@ -114,6 +115,7 @@ export async function traceImage(file: File | Blob, params: TraceParams): Promis
     silhouetteColor: params.bodyColor,
     detailLayers: detailSvgs,
     previewSvg,
+    empty: silhouetteMp.length === 0,
     resolvedSource,
     alphaDetected,
     otsuThreshold: otsu,

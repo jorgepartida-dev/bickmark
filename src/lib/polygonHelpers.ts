@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
+import polygonClipping from 'polygon-clipping';
 
 export type Pair = [number, number];
 export type Ring = Pair[];
 export type Polygon = Ring[];
 export type MultiPolygon = Polygon[];
 
-const CURVE_SEGMENTS = 48;
+const CURVE_SEGMENTS = 96;
 
 export function roundedRect(
   w: number,
@@ -54,7 +55,18 @@ export function svgToMultiPolygon(svgText: string): MultiPolygon {
       polys.push([outer, ...holes]);
     }
   }
-  return polys;
+  if (polys.length <= 1) return polys;
+  // Union all parsed polygons so disjoint same-fill shapes (e.g. body + fins)
+  // all survive, and nested same-fill paths that should union do so cleanly.
+  let result: MultiPolygon = [polys[0]];
+  for (let i = 1; i < polys.length; i++) {
+    try {
+      result = polygonClipping.union(result, [polys[i]]) as MultiPolygon;
+    } catch {
+      result.push(polys[i]);
+    }
+  }
+  return result;
 }
 
 function shapeToRing(shape: THREE.Shape, segments: number): Ring {

@@ -40,7 +40,7 @@ const DEFAULT_SILHOUETTE: SilhouetteParams = {
   targetLongSide: 140,
   tassel: false,
   tasselDiameter: 4,
-  tasselMargin: 5,
+  tasselMargin: 3,
 };
 
 const DEFAULT_OUTLINE_COLOR = '#111827';
@@ -60,6 +60,7 @@ export function App() {
   const [silhouetteParams, setSilhouetteParams] = useState<SilhouetteParams>(DEFAULT_SILHOUETTE);
   const [outlineColor, setOutlineColor] = useState(DEFAULT_OUTLINE_COLOR);
   const [meshes, setMeshes] = useState<SilhouetteMeshSet | null>(null);
+  const [traceEmpty, setTraceEmpty] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
 
@@ -78,6 +79,7 @@ export function App() {
         setOtsuHint(r.otsuThreshold);
         setResolvedSource(r.resolvedSource);
         setAlphaDetected(r.alphaDetected);
+        setTraceEmpty(r.empty);
         setStatus('');
       } catch (e) {
         if (cancelled) return;
@@ -176,6 +178,7 @@ export function App() {
     setFileName('');
     setSourceFile(null);
     setOtsuHint(null);
+    setTraceEmpty(false);
     setTraceParams(DEFAULT_TRACE);
     setStage('upload');
     setError('');
@@ -233,8 +236,22 @@ export function App() {
                 <span className="accent">bick</span>mark
               </h1>
               <nav className="stages">
-                <span className={stage === 'trace' ? 'on' : ''}>1 · Trace</span>
-                <span className={stage === 'model' ? 'on' : ''}>2 · Model</span>
+                <button
+                  type="button"
+                  className={`stage-chip${stage === 'trace' ? ' on' : ''}`}
+                  onClick={() => setStage('trace')}
+                  disabled={sourceKind !== 'png'}
+                >
+                  1 · Trace
+                </button>
+                <button
+                  type="button"
+                  className={`stage-chip${stage === 'model' ? ' on' : ''}`}
+                  onClick={() => setStage('model')}
+                  disabled={!silhouetteSvg || traceEmpty}
+                >
+                  2 · Model
+                </button>
               </nav>
             </header>
 
@@ -525,13 +542,24 @@ export function App() {
             </div>
             {stage === 'trace' && (
               <div className="svg-preview">
-                {previewSvg ? (
+                {status ? (
+                  <div className="empty-hint">{status}</div>
+                ) : traceEmpty ? (
+                  <div className="trace-empty">
+                    <strong>No silhouette detected</strong>
+                    <p>
+                      Try a different <em>Silhouette from</em> mode, slide the
+                      threshold, or toggle <em>Invert</em>. If the source image has
+                      tiny details, lower <em>Despeckle</em>.
+                    </p>
+                  </div>
+                ) : previewSvg ? (
                   <div
                     className="svg-frame"
                     dangerouslySetInnerHTML={{ __html: previewSvg }}
                   />
                 ) : (
-                  <div className="empty-hint">{status || 'Tracing…'}</div>
+                  <div className="empty-hint">Tracing…</div>
                 )}
               </div>
             )}
