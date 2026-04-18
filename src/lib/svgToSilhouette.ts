@@ -52,9 +52,20 @@ export function buildSilhouette(
 
   const silhouette = translateScale(filteredSil, -cx, -cy, scale);
 
-  const detailMps: MultiPolygon[] = detailInputs.map((d) => {
+  const rawDetailMps: MultiPolygon[] = detailInputs.map((d) => {
     const raw = svgToMultiPolygon(d.svg);
     return translateScale(raw, -cx, -cy, scale);
+  });
+
+  // Clamp each detail to the silhouette so majority-filter / Chaikin
+  // drift can't push detail geometry outside the body.
+  const detailsFinal: MultiPolygon[] = rawDetailMps.map((mp) => {
+    if (mp.length === 0 || silhouette.length === 0) return mp;
+    try {
+      return polygonClipping.intersection(mp, silhouette) as MultiPolygon;
+    } catch {
+      return mp;
+    }
   });
 
   const dilated = offsetMultiPolygon(silhouette, p.outlineWidth);
@@ -64,13 +75,32 @@ export function buildSilhouette(
 
   let outline = polygonClipping.difference(dilated, silhouette) as MultiPolygon;
 
-  let body = silhouette;
-  for (const d of detailMps) {
+  // Combine all detail layers into one MP, then subtract in a single pass.
+  let combinedDetails: MultiPolygon = [];
+  for (const d of detailsFinal) {
     if (d.length === 0) continue;
-    body = polygonClipping.difference(body, d) as MultiPolygon;
+    combinedDetails =
+      combinedDetails.length === 0
+        ? d
+        : (polygonClipping.union(combinedDetails, d) as MultiPolygon);
   }
 
-  const detailsFinal: MultiPolygon[] = detailMps.slice();
+  let body = silhouette;
+  if (combinedDetails.length > 0) {
+    try {
+      body = polygonClipping.difference(body, combinedDetails) as MultiPolygon;
+    } catch {
+      // fall back to iterative subtraction if union/diff fails
+      for (const d of detailsFinal) {
+        if (d.length === 0) continue;
+        try {
+          body = polygonClipping.difference(body, d) as MultiPolygon;
+        } catch {
+          /* keep body */
+        }
+      }
+    }
+  }
 
   if (p.tassel && p.tasselDiameter > 0) {
     const db = bbox(dilated);
