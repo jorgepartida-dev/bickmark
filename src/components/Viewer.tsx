@@ -1,36 +1,60 @@
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport, Grid } from '@react-three/drei';
-import type { MutableRefObject } from 'react';
 import * as THREE from 'three';
+import type { MeshSet } from '../lib/svgToMeshes';
 
 interface ViewerProps {
-  geometry: THREE.BufferGeometry | null;
-  meshRef: MutableRefObject<THREE.Mesh | null>;
+  meshes: MeshSet | null;
+  colors: { logo: string; frame: string; background: string };
 }
 
-export function Viewer({ geometry, meshRef }: ViewerProps) {
+export function Viewer({ meshes, colors }: ViewerProps) {
   return (
-    <Canvas camera={{ position: [80, 80, 120], fov: 40 }} shadows>
+    <Canvas camera={{ position: [0, -140, 180], fov: 35, up: [0, 0, 1] }} shadows>
       <color attach="background" args={['#111']} />
-      <ambientLight intensity={0.35} />
-      <directionalLight position={[60, 120, 80]} intensity={1.1} castShadow />
-      <directionalLight position={[-80, -40, -40]} intensity={0.25} />
+      <ambientLight intensity={0.4} />
+      <directionalLight position={[60, 120, 120]} intensity={1.1} castShadow />
+      <directionalLight position={[-80, -60, 40]} intensity={0.3} />
 
       <Grid
-        args={[300, 300]}
+        args={[400, 400]}
         cellSize={5}
         cellColor="#2a2a2a"
         sectionSize={25}
         sectionColor="#3e3e3e"
-        fadeDistance={250}
+        fadeDistance={300}
         fadeStrength={1}
         infiniteGrid={false}
+        rotation={[Math.PI / 2, 0, 0]}
       />
 
-      {geometry && (
-        <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
-          <meshStandardMaterial color="#8ecae6" metalness={0.1} roughness={0.6} side={THREE.DoubleSide} />
-        </mesh>
+      {meshes && (
+        <group>
+          <mesh geometry={meshes.frame} castShadow receiveShadow>
+            <meshStandardMaterial
+              color={colors.frame}
+              metalness={0.05}
+              roughness={0.7}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          <mesh geometry={meshes.background} castShadow receiveShadow>
+            <meshStandardMaterial
+              color={colors.background}
+              metalness={0.05}
+              roughness={0.75}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          <mesh geometry={meshes.logo} castShadow receiveShadow>
+            <meshStandardMaterial
+              color={colors.logo}
+              metalness={0.1}
+              roughness={0.6}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+        </group>
       )}
 
       <OrbitControls makeDefault />
