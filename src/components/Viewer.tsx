@@ -1,17 +1,17 @@
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport, Grid } from '@react-three/drei';
 import * as THREE from 'three';
-import type { MeshSet } from '../lib/svgToMeshes';
+import type { SilhouetteMeshSet } from '../lib/svgToSilhouette';
 
 interface ViewerProps {
-  meshes: MeshSet | null;
-  colors: { logo: string; frame: string; background: string };
+  meshes: SilhouetteMeshSet | null;
+  colors: { outline: string; body: string };
 }
 
 export function Viewer({ meshes, colors }: ViewerProps) {
   return (
-    <Canvas camera={{ position: [0, -140, 180], fov: 35, up: [0, 0, 1] }} shadows>
-      <color attach="background" args={['#111']} />
+    <Canvas camera={{ position: [0, -140, 180], fov: 35, up: [0, 0, 1] }} shadows frameloop="demand">
+      <color attach="background" args={['#0c0c0c']} />
       <ambientLight intensity={0.4} />
       <directionalLight position={[60, 120, 120]} intensity={1.1} castShadow />
       <directionalLight position={[-80, -60, 40]} intensity={0.3} />
@@ -30,25 +30,17 @@ export function Viewer({ meshes, colors }: ViewerProps) {
 
       {meshes && (
         <group>
-          <mesh geometry={meshes.frame} castShadow receiveShadow>
+          <mesh geometry={meshes.outline} castShadow receiveShadow>
             <meshStandardMaterial
-              color={colors.frame}
+              color={colors.outline}
               metalness={0.05}
               roughness={0.7}
               side={THREE.DoubleSide}
             />
           </mesh>
-          <mesh geometry={meshes.background} castShadow receiveShadow>
+          <mesh geometry={meshes.body} castShadow receiveShadow>
             <meshStandardMaterial
-              color={colors.background}
-              metalness={0.05}
-              roughness={0.75}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-          <mesh geometry={meshes.logo} castShadow receiveShadow>
-            <meshStandardMaterial
-              color={colors.logo}
+              color={colors.body}
               metalness={0.1}
               roughness={0.6}
               side={THREE.DoubleSide}

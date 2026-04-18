@@ -1,17 +1,27 @@
 import ImageTracer from 'imagetracerjs';
 
 export interface TraceParams {
-  threshold: number;
+  threshold: number | null;
   despeckle: number;
   smoothing: number;
   invert: boolean;
 }
 
-const TRACE_MAX_DIM = 1024;
+const TRACE_MAX_DIM = 1600;
 
-export async function traceImage(file: File | Blob, params: TraceParams): Promise<string> {
+export interface TraceResult {
+  svg: string;
+  otsuThreshold: number;
+  usedThreshold: number;
+  width: number;
+  height: number;
+}
+
+export async function traceImage(file: File | Blob, params: TraceParams): Promise<TraceResult> {
   const imageData = await loadAsImageData(file, TRACE_MAX_DIM);
-  const binary = binarize(imageData, params.threshold, params.invert);
+  const otsu = otsuThreshold(imageData) / 255;
+  const threshold = params.threshold ?? otsu;
+  const binary = binarize(imageData, threshold, params.invert);
   const rawSvg = ImageTracer.imagedataToSVG(binary, {
     numberofcolors: 2,
     pathomit: Math.max(0, Math.round(params.despeckle)),
@@ -22,7 +32,14 @@ export async function traceImage(file: File | Blob, params: TraceParams): Promis
     colorquantcycles: 1,
     mincolorratio: 0,
   });
-  return keepForegroundPaths(rawSvg);
+  const cleaned = cleanTraceSvg(rawSvg, imageData.width, imageData.height);
+  return {
+    svg: cleaned,
+    otsuThreshold: otsu,
+    usedThreshold: threshold,
+    width: imageData.width,
+    height: imageData.height,
+  };
 }
 
 async function loadAsImageData(file: File | Blob, maxDim: number): Promise<ImageData> {
@@ -45,18 +62,50 @@ async function loadAsImageData(file: File | Blob, maxDim: number): Promise<Image
   return ctx.getImageData(0, 0, w, h);
 }
 
+function otsuThreshold(src: ImageData): number {
+  const hist = new Uint32Array(256);
+  let total = 0;
+  const d = src.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 128) continue;
+    const lum = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+    hist[lum]++;
+    total++;
+  }
+  if (total === 0) return 128;
+
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+
+  let sumB = 0;
+  let wB = 0;
+  let maxVar = 0;
+  let best = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const vb = wB * wF * (mB - mF) * (mB - mF);
+    if (vb > maxVar) {
+      maxVar = vb;
+      best = t;
+    }
+  }
+  return best;
+}
+
 function binarize(src: ImageData, threshold01: number, invert: boolean): ImageData {
   const out = new ImageData(new Uint8ClampedArray(src.data.length), src.width, src.height);
   const t = threshold01 * 255;
   for (let i = 0; i < src.data.length; i += 4) {
-    const r = src.data[i];
-    const g = src.data[i + 1];
-    const b = src.data[i + 2];
-    const a = src.data[i + 3];
-    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const lum = 0.299 * src.data[i] + 0.587 * src.data[i + 1] + 0.114 * src.data[i + 2];
     let on = lum < t;
     if (invert) on = !on;
-    if (a < 128) on = false;
+    if (src.data[i + 3] < 128) on = false;
     const v = on ? 0 : 255;
     out.data[i] = v;
     out.data[i + 1] = v;
@@ -66,22 +115,78 @@ function binarize(src: ImageData, threshold01: number, invert: boolean): ImageDa
   return out;
 }
 
-function keepForegroundPaths(svg: string): string {
+function cleanTraceSvg(svg: string, w: number, h: number): string {
   const parser = new DOMParser();
   const doc = parser.parseFromString(svg, 'image/svg+xml');
-  const paths = doc.querySelectorAll('path');
-  paths.forEach((p) => {
+  const root = doc.documentElement;
+
+  root.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  root.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  root.removeAttribute('width');
+  root.removeAttribute('height');
+
+  const imageArea = w * h;
+  const paths = Array.from(doc.querySelectorAll('path'));
+  for (const p of paths) {
     const fill = (p.getAttribute('fill') || '').trim().toLowerCase();
     if (!fill || fill === 'none') {
       p.remove();
-      return;
+      continue;
     }
     const rgb = parseFill(fill);
-    if (!rgb) return;
-    const brightness = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
-    if (brightness > 128) p.remove();
-  });
+    if (rgb) {
+      const lum = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+      if (lum > 128) {
+        p.remove();
+        continue;
+      }
+    }
+    const d = p.getAttribute('d') || '';
+    const segments = (d.match(/[MLHVCSQTA]/gi) || []).length;
+    if (segments < 4) {
+      p.remove();
+      continue;
+    }
+    if (looksLikeImageBounds(d, w, h, imageArea)) {
+      p.remove();
+    }
+  }
   return new XMLSerializer().serializeToString(doc);
+}
+
+function looksLikeImageBounds(d: string, w: number, h: number, imageArea: number): boolean {
+  const pts = extractMoveLinePoints(d);
+  if (pts.length < 4 || pts.length > 10) return false;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of pts) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const bbArea = (maxX - minX) * (maxY - minY);
+  const coversImage =
+    minX <= 2 && minY <= 2 && maxX >= w - 2 && maxY >= h - 2;
+  return coversImage && bbArea > imageArea * 0.9;
+}
+
+function extractMoveLinePoints(d: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  const re = /([MLCQ])\s*([-0-9.,\s]+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(d))) {
+    const nums = m[2]
+      .split(/[\s,]+/)
+      .map(parseFloat)
+      .filter((n) => !isNaN(n));
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      out.push([nums[i], nums[i + 1]]);
+    }
+  }
+  return out;
 }
 
 function parseFill(input: string): { r: number; g: number; b: number } | null {

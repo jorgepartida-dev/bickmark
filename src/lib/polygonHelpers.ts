@@ -67,6 +67,23 @@ function pathToRing(path: THREE.Path, segments: number): Ring {
   return pts.map((p) => [p.x, -p.y] as Pair);
 }
 
+export function ringArea(ring: Ring): number {
+  let a = 0;
+  for (let i = 0, n = ring.length; i < n; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % n];
+    a += x1 * y2 - x2 * y1;
+  }
+  return a / 2;
+}
+
+export function polygonArea(poly: Polygon): number {
+  if (poly.length === 0) return 0;
+  let a = Math.abs(ringArea(poly[0]));
+  for (let i = 1; i < poly.length; i++) a -= Math.abs(ringArea(poly[i]));
+  return Math.max(0, a);
+}
+
 export function bbox(mp: MultiPolygon): { minX: number; minY: number; maxX: number; maxY: number } {
   let minX = Infinity;
   let minY = Infinity;

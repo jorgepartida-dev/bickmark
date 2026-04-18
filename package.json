@@ -12,6 +12,7 @@
   "dependencies": {
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.17.10",
+    "clipper-lib": "^6.4.2",
     "fflate": "^0.8.2",
     "imagetracerjs": "^1.2.6",
     "polygon-clipping": "^0.15.7",

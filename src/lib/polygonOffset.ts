@@ -1,0 +1,48 @@
+import * as ClipperLib from 'clipper-lib';
+import type { MultiPolygon, Pair, Polygon, Ring } from './polygonHelpers';
+
+const SCALE = 1000;
+const ARC_TOLERANCE = 0.25;
+
+export function offsetMultiPolygon(mp: MultiPolygon, deltaMm: number): MultiPolygon {
+  if (mp.length === 0 || deltaMm === 0) return mp;
+  const co = new ClipperLib.ClipperOffset(2, ARC_TOLERANCE);
+  for (const poly of mp) {
+    for (const ring of poly) {
+      const path = ringToClipper(ring);
+      if (path.length < 3) continue;
+      co.AddPath(path, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+    }
+  }
+  const tree = new ClipperLib.PolyTree();
+  co.Execute(tree, deltaMm * SCALE);
+  return polyTreeToMultiPolygon(tree);
+}
+
+function ringToClipper(ring: Ring): ClipperLib.Path {
+  return ring.map(([x, y]) => ({ X: Math.round(x * SCALE), Y: Math.round(y * SCALE) }));
+}
+
+function pointsToRing(path: ClipperLib.Path): Ring {
+  return path.map((pt) => [pt.X / SCALE, pt.Y / SCALE] as Pair);
+}
+
+function polyTreeToMultiPolygon(tree: ClipperLib.PolyTree): MultiPolygon {
+  const result: MultiPolygon = [];
+  const walk = (node: ClipperLib.PolyNode) => {
+    if (!node.IsHole && node.Contour.length >= 3) {
+      const poly: Polygon = [pointsToRing(node.Contour)];
+      for (const child of node.Childs) {
+        if (child.IsHole && child.Contour.length >= 3) {
+          poly.push(pointsToRing(child.Contour));
+        }
+      }
+      result.push(poly);
+      for (const child of node.Childs) {
+        for (const grand of child.Childs) walk(grand);
+      }
+    }
+  };
+  for (const child of tree.Childs) walk(child);
+  return result;
+}
