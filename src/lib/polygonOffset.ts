@@ -1,5 +1,5 @@
 import * as ClipperLib from 'clipper-lib';
-import type { MultiPolygon, Pair, Polygon, Ring } from './polygonHelpers';
+import { ringArea, type MultiPolygon, type Pair, type Polygon, type Ring } from './polygonHelpers';
 
 const SCALE = 1000;
 const ARC_TOLERANCE = 0.25;
@@ -27,16 +27,24 @@ function pointsToRing(path: ClipperLib.Path): Ring {
   return path.map((pt) => [pt.X / SCALE, pt.Y / SCALE] as Pair);
 }
 
+function ensureCCW(ring: Ring): Ring {
+  return ringArea(ring) < 0 ? ring.slice().reverse() : ring;
+}
+
+function ensureCW(ring: Ring): Ring {
+  return ringArea(ring) > 0 ? ring.slice().reverse() : ring;
+}
+
 function polyTreeToMultiPolygon(tree: ClipperLib.PolyTree): MultiPolygon {
   const result: MultiPolygon = [];
   const walk = (node: ClipperLib.PolyNode) => {
     const contour = node.Contour();
     const childs = node.Childs();
     if (!node.IsHole() && contour.length >= 3) {
-      const poly: Polygon = [pointsToRing(contour)];
+      const poly: Polygon = [ensureCCW(pointsToRing(contour))];
       for (const child of childs) {
         if (child.IsHole() && child.Contour().length >= 3) {
-          poly.push(pointsToRing(child.Contour()));
+          poly.push(ensureCW(pointsToRing(child.Contour())));
         }
       }
       result.push(poly);

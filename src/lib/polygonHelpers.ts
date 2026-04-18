@@ -211,9 +211,11 @@ export function multiPolygonToShapes(mp: MultiPolygon): THREE.Shape[] {
 
 function polygonToShape(polygon: Polygon): THREE.Shape {
   const [outer, ...holes] = polygon;
-  const shape = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x, y)));
+  const outerCCW = ringArea(outer) < 0 ? outer.slice().reverse() : outer;
+  const shape = new THREE.Shape(outerCCW.map(([x, y]) => new THREE.Vector2(x, y)));
   for (const hole of holes) {
-    shape.holes.push(new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))));
+    const holeCW = ringArea(hole) > 0 ? hole.slice().reverse() : hole;
+    shape.holes.push(new THREE.Path(holeCW.map(([x, y]) => new THREE.Vector2(x, y))));
   }
   return shape;
 }
