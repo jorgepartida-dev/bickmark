@@ -1,6 +1,9 @@
 import ImageTracer from 'imagetracerjs';
 
+export type SilhouetteSource = 'auto' | 'alpha' | 'luminance';
+
 export interface TraceParams {
+  source: SilhouetteSource;
   threshold: number | null;
   despeckle: number;
   smoothing: number;
@@ -11,6 +14,8 @@ const TRACE_MAX_DIM = 1600;
 
 export interface TraceResult {
   svg: string;
+  resolvedSource: 'alpha' | 'luminance';
+  alphaDetected: boolean;
   otsuThreshold: number;
   usedThreshold: number;
   width: number;
@@ -20,23 +25,46 @@ export interface TraceResult {
 export async function traceImage(file: File | Blob, params: TraceParams): Promise<TraceResult> {
   const imageData = await loadAsImageData(file, TRACE_MAX_DIM);
   const otsu = otsuThreshold(imageData) / 255;
-  const threshold = params.threshold ?? otsu;
-  const binary = binarize(imageData, threshold, params.invert);
+  const alphaDetected = hasAlphaCoverage(imageData);
+
+  const resolvedSource: 'alpha' | 'luminance' =
+    params.source === 'auto'
+      ? alphaDetected
+        ? 'alpha'
+        : 'luminance'
+      : params.source;
+
+  const usedThreshold = params.threshold ?? otsu;
+
+  let binary: ImageData;
+  if (resolvedSource === 'alpha') {
+    binary = binarizeByAlpha(imageData, params.invert);
+  } else {
+    binary = binarizeByLuminance(imageData, usedThreshold, params.invert);
+  }
+
+  binary = majorityFilter3x3(binary);
+
   const rawSvg = ImageTracer.imagedataToSVG(binary, {
     numberofcolors: 2,
     pathomit: Math.max(0, Math.round(params.despeckle)),
-    ltres: 1.0,
+    ltres: Math.max(0.01, params.smoothing * 0.5),
     qtres: Math.max(0.01, params.smoothing),
     blurradius: 0,
     strokewidth: 0,
     colorquantcycles: 1,
     mincolorratio: 0,
+    roundcoords: 1,
   });
+
   const cleaned = cleanTraceSvg(rawSvg, imageData.width, imageData.height);
+
   return {
     svg: cleaned,
+    resolvedSource,
+    alphaDetected,
     otsuThreshold: otsu,
-    usedThreshold: threshold,
+    usedThreshold,
     width: imageData.width,
     height: imageData.height,
   };
@@ -60,6 +88,20 @@ async function loadAsImageData(file: File | Blob, maxDim: number): Promise<Image
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
   return ctx.getImageData(0, 0, w, h);
+}
+
+function hasAlphaCoverage(src: ImageData): boolean {
+  const d = src.data;
+  const total = d.length / 4;
+  let transparent = 0;
+  const step = Math.max(1, Math.floor(total / 20000));
+  let sampled = 0;
+  for (let i = 3; i < d.length; i += 4 * step) {
+    if (d[i] < 128) transparent++;
+    sampled++;
+  }
+  if (sampled === 0) return false;
+  return transparent / sampled > 0.03;
 }
 
 function otsuThreshold(src: ImageData): number {
@@ -98,7 +140,21 @@ function otsuThreshold(src: ImageData): number {
   return best;
 }
 
-function binarize(src: ImageData, threshold01: number, invert: boolean): ImageData {
+function binarizeByAlpha(src: ImageData, invert: boolean): ImageData {
+  const out = new ImageData(new Uint8ClampedArray(src.data.length), src.width, src.height);
+  for (let i = 0; i < src.data.length; i += 4) {
+    let on = src.data[i + 3] >= 128;
+    if (invert) on = !on;
+    const v = on ? 0 : 255;
+    out.data[i] = v;
+    out.data[i + 1] = v;
+    out.data[i + 2] = v;
+    out.data[i + 3] = 255;
+  }
+  return out;
+}
+
+function binarizeByLuminance(src: ImageData, threshold01: number, invert: boolean): ImageData {
   const out = new ImageData(new Uint8ClampedArray(src.data.length), src.width, src.height);
   const t = threshold01 * 255;
   for (let i = 0; i < src.data.length; i += 4) {
@@ -111,6 +167,37 @@ function binarize(src: ImageData, threshold01: number, invert: boolean): ImageDa
     out.data[i + 1] = v;
     out.data[i + 2] = v;
     out.data[i + 3] = 255;
+  }
+  return out;
+}
+
+function majorityFilter3x3(src: ImageData): ImageData {
+  const w = src.width;
+  const h = src.height;
+  const out = new ImageData(new Uint8ClampedArray(src.data.length), w, h);
+  const isOn = (x: number, y: number): boolean => {
+    if (x < 0 || x >= w || y < 0 || y >= h) return false;
+    return src.data[(y * w + x) * 4] < 128;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let count = 0;
+      let total = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (x + dx < 0 || x + dx >= w || y + dy < 0 || y + dy >= h) continue;
+          total++;
+          if (isOn(x + dx, y + dy)) count++;
+        }
+      }
+      const on = count * 2 > total;
+      const i = (y * w + x) * 4;
+      const v = on ? 0 : 255;
+      out.data[i] = v;
+      out.data[i + 1] = v;
+      out.data[i + 2] = v;
+      out.data[i + 3] = 255;
+    }
   }
   return out;
 }
@@ -168,8 +255,7 @@ function looksLikeImageBounds(d: string, w: number, h: number, imageArea: number
     if (y > maxY) maxY = y;
   }
   const bbArea = (maxX - minX) * (maxY - minY);
-  const coversImage =
-    minX <= 2 && minY <= 2 && maxX >= w - 2 && maxY >= h - 2;
+  const coversImage = minX <= 2 && minY <= 2 && maxX >= w - 2 && maxY >= h - 2;
   return coversImage && bbArea > imageArea * 0.9;
 }
 

@@ -16,9 +16,10 @@ type Stage = 'upload' | 'trace' | 'model';
 type SourceKind = 'png' | 'svg';
 
 const DEFAULT_TRACE: TraceParams = {
+  source: 'auto',
   threshold: null,
   despeckle: 4,
-  smoothing: 1,
+  smoothing: 3,
   invert: false,
 };
 
@@ -43,6 +44,8 @@ export function App() {
   const [sourceKind, setSourceKind] = useState<SourceKind>('svg');
   const [svgText, setSvgText] = useState('');
   const [otsuHint, setOtsuHint] = useState<number | null>(null);
+  const [resolvedSource, setResolvedSource] = useState<'alpha' | 'luminance'>('luminance');
+  const [alphaDetected, setAlphaDetected] = useState(false);
   const [traceParams, setTraceParams] = useState<TraceParams>(DEFAULT_TRACE);
   const [silhouetteParams, setSilhouetteParams] = useState<SilhouetteParams>(DEFAULT_SILHOUETTE);
   const [colors, setColors] = useState(DEFAULT_COLORS);
@@ -61,6 +64,8 @@ export function App() {
         if (cancelled) return;
         setSvgText(r.svg);
         setOtsuHint(r.otsuThreshold);
+        setResolvedSource(r.resolvedSource);
+        setAlphaDetected(r.alphaDetected);
         setStatus('');
       } catch (e) {
         if (cancelled) return;
@@ -198,27 +203,44 @@ export function App() {
 
             <div className="section">
               <h2>Trace</h2>
-              <label className="row range">
-                <span>Threshold</span>
-                <input
-                  type="range"
-                  min={0.05}
-                  max={0.95}
-                  step={0.01}
-                  value={thresholdUI}
-                  onChange={(e) => setTP('threshold', +e.target.value)}
-                />
-                <span className="num">{thresholdUI.toFixed(2)}</span>
-              </label>
-              <div className="row-actions">
-                <button
-                  className="link"
-                  onClick={() => setTP('threshold', null)}
-                  disabled={thresholdOverride === null}
+              <label className="row">
+                <span>Silhouette from</span>
+                <select
+                  value={traceParams.source}
+                  onChange={(e) => setTP('source', e.target.value as TraceParams['source'])}
                 >
-                  Auto (Otsu{otsuHint != null ? ` ${otsuHint.toFixed(2)}` : ''})
-                </button>
-              </div>
+                  <option value="auto">
+                    Auto ({alphaDetected ? 'alpha' : 'luminance'})
+                  </option>
+                  <option value="alpha">Alpha channel</option>
+                  <option value="luminance">Luminance</option>
+                </select>
+              </label>
+              {resolvedSource === 'luminance' && (
+                <>
+                  <label className="row range">
+                    <span>Threshold</span>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={0.95}
+                      step={0.01}
+                      value={thresholdUI}
+                      onChange={(e) => setTP('threshold', +e.target.value)}
+                    />
+                    <span className="num">{thresholdUI.toFixed(2)}</span>
+                  </label>
+                  <div className="row-actions">
+                    <button
+                      className="link"
+                      onClick={() => setTP('threshold', null)}
+                      disabled={thresholdOverride === null}
+                    >
+                      Auto (Otsu{otsuHint != null ? ` ${otsuHint.toFixed(2)}` : ''})
+                    </button>
+                  </div>
+                </>
+              )}
               <Range
                 label="Despeckle"
                 min={0}
@@ -231,20 +253,22 @@ export function App() {
               <Range
                 label="Smoothing"
                 min={0.1}
-                max={5}
+                max={10}
                 step={0.1}
                 value={traceParams.smoothing}
                 onChange={(v) => setTP('smoothing', v)}
                 fmt={(v) => v.toFixed(1)}
               />
-              <label className="row">
-                <span>Invert</span>
-                <input
-                  type="checkbox"
-                  checked={traceParams.invert}
-                  onChange={(e) => setTP('invert', e.target.checked)}
-                />
-              </label>
+              {resolvedSource === 'luminance' && (
+                <label className="row">
+                  <span>Invert</span>
+                  <input
+                    type="checkbox"
+                    checked={traceParams.invert}
+                    onChange={(e) => setTP('invert', e.target.checked)}
+                  />
+                </label>
+              )}
             </div>
 
             {status && <div className="status">{status}</div>}
